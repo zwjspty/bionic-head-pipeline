@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
 
 from bionic_head.domain.models import Emotion
@@ -81,6 +81,57 @@ class MockSettings(BaseModel):
     intensity: float = Field(default=0.8, ge=0.0, le=1.0)
 
 
+class CommandSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    executable: str = ""
+    args: list[str] = Field(default_factory=list)
+    cwd: Path | None = None
+    timeout_seconds: float = Field(default=120.0, gt=0)
+
+
+class FasterWhisperSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = "base"
+    device: str = "cpu"
+    compute_type: str = "int8"
+    language: str = "zh"
+
+
+class OllamaSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: AnyHttpUrl = "http://127.0.0.1:11434"
+    model: str = "qwen2.5:3b"
+    timeout_seconds: float = Field(default=120.0, gt=0)
+
+
+class PiperSettings(CommandSettings):
+    model_path: Path | None = None
+
+    @field_validator("model_path", mode="before")
+    @classmethod
+    def _empty_model_path_is_unknown(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
+
+
+class MorpheusSettings(CommandSettings):
+    output_npy_glob: str = "*.npy"
+    output_json_glob: str = "*.json"
+
+
+class ProvidersSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    faster_whisper: FasterWhisperSettings = Field(default_factory=FasterWhisperSettings)
+    ollama: OllamaSettings = Field(default_factory=OllamaSettings)
+    piper: PiperSettings = Field(default_factory=PiperSettings)
+    morpheus: MorpheusSettings = Field(default_factory=MorpheusSettings)
+
+
 class StorageSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -96,6 +147,7 @@ class AppSettings(BaseModel):
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     adapters: AdaptersSettings = Field(default_factory=AdaptersSettings)
     mock: MockSettings = Field(default_factory=MockSettings)
+    providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
 
 

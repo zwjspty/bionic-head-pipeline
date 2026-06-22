@@ -13,35 +13,47 @@
   "retention": {"max_runs": 100},
   "limits": {"morpheus_max_concurrency": 1, "subprocess_terminate_grace_seconds": 2},
   "adapters": {
-    "asr": {
-      "provider": "faster-whisper",
-      "timeout_seconds": 5,
-      "executable": "",
-      "model": ""
+    "asr": {"provider": "faster-whisper", "timeout_seconds": 5},
+    "llm": {"provider": "ollama", "timeout_seconds": 5},
+    "tts": {"provider": "piper", "timeout_seconds": 5},
+    "audio2face": {"provider": "morpheus", "timeout_seconds": 5},
+    "ue5": {"provider": "morpheus-raw", "timeout_seconds": 5}
+  },
+  "providers": {
+    "faster_whisper": {
+      "model": "base",
+      "device": "cpu",
+      "compute_type": "int8",
+      "language": "zh"
     },
-    "llm": {
-      "provider": "ollama",
-      "timeout_seconds": 5,
-      "command": "",
-      "model": ""
+    "ollama": {
+      "base_url": "http://127.0.0.1:11434",
+      "model": "qwen2.5:3b",
+      "timeout_seconds": 120
     },
-    "tts": {
-      "provider": "piper",
-      "timeout_seconds": 5,
+    "piper": {
       "executable": "",
-      "model": ""
+      "args": ["--model", "{model_path}", "--output_file", "{output_path}"],
+      "model_path": "",
+      "cwd": null,
+      "timeout_seconds": 120
     },
-    "audio2face": {
-      "provider": "morpheus",
-      "timeout_seconds": 5,
-      "executable": "",
-      "command": ""
-    },
-    "ue5": {
-      "provider": "morpheus-raw",
-      "timeout_seconds": 5,
-      "executable": "",
-      "command": ""
+    "morpheus": {
+      "executable": "conda",
+      "args": [
+        "run",
+        "-n",
+        "lyyMor",
+        "",
+        "--input",
+        "{input_path}",
+        "--output-dir",
+        "{output_dir}"
+      ],
+      "cwd": "/home/hailab/liuyiyu/head-project/Morpheus-Software",
+      "output_npy_glob": "*.npy",
+      "output_json_glob": "*.json",
+      "timeout_seconds": 300
     }
   },
   "storage": {"root": "data"}

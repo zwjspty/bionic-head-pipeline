@@ -60,7 +60,7 @@ docs/operations/real-providers.md            Server configuration and validation
   - `run_command(args, cwd, stdin, timeout, cancellation, grace_seconds) -> CompletedCommand`.
 - Consumes: P0 cancellation token and error model.
 
-- [ ] **Step 1: Write failing process-runner tests**
+- [x] **Step 1: Write failing process-runner tests**
 
 ```python
 # tests/unit/test_process.py
@@ -102,13 +102,13 @@ async def test_timeout_maps_to_provider_timeout(tmp_path) -> None:
     assert raised.value.code is ErrorCode.PROVIDER_TIMEOUT
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_process.py tests/unit/test_config.py -v`
 
 Expected: FAIL because the process runner and real command settings do not exist.
 
-- [ ] **Step 3: Add optional dependencies and exact config fields**
+- [x] **Step 3: Add optional dependencies and exact config fields**
 
 Add:
 
@@ -190,7 +190,7 @@ class MorpheusSettings(CommandSettings):
 
 The empty Morpheus command element is deliberately invalid until the deployment command is confirmed; diagnostics must report it as unavailable.
 
-- [ ] **Step 4: Implement process lifecycle**
+- [x] **Step 4: Implement process lifecycle**
 
 `run_command` uses `asyncio.create_subprocess_exec(*args, cwd=cwd, stdin=PIPE if stdin else DEVNULL, stdout=PIPE, stderr=PIPE, start_new_session=True)`. Race `process.communicate(stdin)` against `cancellation.wait()` and timeout.
 
@@ -208,13 +208,13 @@ raise asyncio.CancelledError
 
 On nonzero exit, raise `provider_failed` with a safe message. Keep decoded stderr available only on `CompletedCommand.debug_stderr` for logging; never put it in `PipelineException.safe_message`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_process.py tests/unit/test_config.py -v`
 
 Expected: PASS for success, nonzero exit, timeout, cooperative cancel, kill-after-grace, missing executable, and argument-array validation.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add pyproject.toml config/real.example.json src/bionic_head/config.py src/bionic_head/core/process.py tests/unit
