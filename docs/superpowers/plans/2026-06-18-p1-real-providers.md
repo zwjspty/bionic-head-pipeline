@@ -820,7 +820,7 @@ git commit -m "test: validate mixed and real provider pipelines"
 **Interfaces:**
 - Produces: CLI client that sends PCM/WAV input, receives paired WAV binaries and UE5 frame chunks, saves outputs, validates sequence, and supports cancel.
 
-- [ ] **Step 1: Write failing client-state tests**
+- [x] **Step 1: Write failing client-state tests**
 
 ```python
 # tests/unit/test_stream_client.py
@@ -849,13 +849,13 @@ def test_cancel_clears_pending_playback(tmp_path) -> None:
     assert receiver.pending_segments == {}
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_stream_client.py -v`
 
 Expected: FAIL because the client does not exist.
 
-- [ ] **Step 3: Implement CLI and protocol receiver**
+- [x] **Step 3: Implement CLI and protocol receiver**
 
 Define `server_event` in the test module to populate the full protocol envelope with fixed session/turn UUIDs, a fresh event UUID, and a timezone-aware UTC timestamp.
 
@@ -885,7 +885,7 @@ Receiver requirements:
 - Ctrl-C sends `client.turn.cancel` once before closing;
 - `server.turn.cancelled` clears pending audio/frame queues.
 
-- [ ] **Step 4: Run unit tests and a Mock live smoke test**
+- [x] **Step 4: Run unit tests and a Mock live smoke test**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_stream_client.py -v`
 
@@ -900,7 +900,7 @@ With Mock server running:
 
 Expected: terminal event is `server.pipeline.done`; WAV and UE5 files are saved.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add pyproject.toml scripts/__init__.py scripts/stream_client.py tests/unit/test_stream_client.py docs/operations/stream-client.md
