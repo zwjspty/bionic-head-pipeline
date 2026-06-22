@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from bionic_head.api.dependencies import AppContainer
-from bionic_head.api.routes import health, pipeline
+from bionic_head.api.routes import health, pipeline, stream
 from bionic_head.config import AppSettings, load_settings
 from bionic_head.domain.errors import ErrorCode, PipelineException
 
@@ -35,6 +35,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     app.add_exception_handler(PipelineException, pipeline_exception_handler)
     app.include_router(health.router)
     app.include_router(pipeline.router)
+    app.include_router(stream.router)
     return app
 
 

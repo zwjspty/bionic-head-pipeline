@@ -66,6 +66,7 @@ class EventEnvelope(BaseModel):
             EventType.SERVER_SESSION_READY,
             EventType.CLIENT_PING,
             EventType.SERVER_PONG,
+            EventType.SERVER_PIPELINE_ERROR,
         }
         if self.turn_id is None and self.type not in session_level:
             raise ValueError(f"{self.type.value} requires turn_id")

@@ -13,6 +13,7 @@ from bionic_head.config import AppSettings
 from bionic_head.core.artifacts import ArtifactStore
 from bionic_head.domain.errors import ErrorCode, PipelineException
 from bionic_head.orchestrators.offline import CommitCallback, OfflineOrchestrator
+from bionic_head.orchestrators.stream import StreamOrchestrator
 
 
 class SessionManager:
@@ -21,6 +22,25 @@ class SessionManager:
         self._active_sessions: set[UUID] = set()
         self._latest_turns: dict[UUID, UUID] = {}
         self._lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def admit(self, session_id: UUID) -> AsyncIterator[None]:
+        async with self._lock:
+            if session_id not in self._active_sessions and len(self._active_sessions) >= self.max_active_sessions:
+                raise PipelineException(
+                    code=ErrorCode.SESSION_LIMIT_REACHED,
+                    stage="session",
+                    provider=None,
+                    retryable=True,
+                    message="Session limit reached",
+                )
+            self._active_sessions.add(session_id)
+
+        try:
+            yield
+        finally:
+            async with self._lock:
+                self._active_sessions.discard(session_id)
 
     @asynccontextmanager
     async def activate(self, session_id: UUID, turn_id: UUID) -> AsyncIterator[None]:
@@ -77,6 +97,13 @@ class AppContainer:
             registry=self.registry,
             store=self.store,
             commit_if_current=self.sessions.commit_if_current,
+        )
+
+    def make_stream_orchestrator(self) -> StreamOrchestrator:
+        return StreamOrchestrator(
+            settings=self.settings,
+            registry=self.registry,
+            store=self.store,
         )
 
 

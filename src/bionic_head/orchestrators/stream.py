@@ -52,8 +52,9 @@ class StreamOrchestrator:
         turn: TurnHandle,
         emit_json: EmitJSON,
         emit_binary_pair: EmitBinaryPair,
+        event_factory: EventFactory | None = None,
     ) -> None:
-        factory = EventFactory(session_id=turn.session_id)
+        factory = event_factory or EventFactory(session_id=turn.session_id)
         timeline = Timeline()
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
