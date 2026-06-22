@@ -1,9 +1,12 @@
 from array import array
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+import itertools
 import wave
 
 import pytest
+from fastapi.testclient import TestClient
 
 from bionic_head.core.cancellation import CancellationToken
 from bionic_head.core.state import TurnHandle
@@ -163,3 +166,71 @@ def stream_harness_factory(mock_settings, mock_registry, artifact_store, speech_
 @pytest.fixture
 def stream_harness(stream_harness_factory):
     return stream_harness_factory()
+
+
+TERMINAL_TYPES = {"server.pipeline.done", "server.pipeline.error", "server.turn.cancelled"}
+
+
+def post_audio(app, path: Path):
+    client = TestClient(app)
+    with path.open("rb") as handle:
+        return client.post(
+            "/pipeline/audio",
+            files={"audio": (path.name, handle, "audio/wav")},
+        )
+
+
+def terminal_types(events: list[dict[str, object]]) -> list[str]:
+    return [str(event["type"]) for event in events if event["type"] in TERMINAL_TYPES]
+
+
+def strictly_increasing_sequences(events: list[dict[str, object]]) -> bool:
+    sequences = [int(event["sequence"]) for event in events]
+    return sequences == sorted(sequences) and len(sequences) == len(set(sequences))
+
+
+@pytest.fixture
+def websocket_turn(speech_pcm):
+    def run(app):
+        session_id = uuid4()
+        turn_id = uuid4()
+        sequence = itertools.count(1)
+        events: list[dict[str, object]] = []
+        client = TestClient(app)
+        with client.websocket_connect("/pipeline/stream") as ws:
+            ws.send_json(_client_event("client.session.start", session_id, None, next(sequence), {}))
+            events.append(ws.receive_json())
+            ws.send_json(_client_event("client.audio.start", session_id, turn_id, next(sequence), {}))
+            ws.send_json(
+                _client_event(
+                    "client.audio.chunk",
+                    session_id,
+                    turn_id,
+                    next(sequence),
+                    {"byte_length": len(speech_pcm), "duration_ms": 100},
+                )
+            )
+            ws.send_bytes(speech_pcm)
+            ws.send_json(_client_event("client.audio.end", session_id, turn_id, next(sequence), {}))
+            while True:
+                event = ws.receive_json()
+                events.append(event)
+                if event["type"] == "server.tts.audio":
+                    ws.receive_bytes()
+                if event["type"] in TERMINAL_TYPES:
+                    return events
+
+    return run
+
+
+def _client_event(event_type: str, session_id, turn_id, sequence: int, payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "protocol": "bionic-head-stream-v1",
+        "type": event_type,
+        "event_id": str(uuid4()),
+        "session_id": str(session_id),
+        "turn_id": str(turn_id) if turn_id is not None else None,
+        "sequence": sequence,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "payload": payload,
+    }
