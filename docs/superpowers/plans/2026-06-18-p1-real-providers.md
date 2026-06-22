@@ -360,7 +360,7 @@ git commit -m "feat: add ollama streaming provider"
 - Produces: `FasterWhisperASRAdapter` implementing P0 `ASRAdapter`.
 - Consumes: valid WAV and lazy `WhisperModel`.
 
-- [ ] **Step 1: Write failing tests with a fake model**
+- [x] **Step 1: Write failing tests with a fake model**
 
 ```python
 # tests/unit/test_faster_whisper_adapter.py
@@ -391,13 +391,13 @@ async def test_transcribe_normalizes_segments(turn_context, speech_wav) -> None:
     assert result.language == "zh"
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_faster_whisper_adapter.py -v`
 
 Expected: FAIL because the adapter does not exist.
 
-- [ ] **Step 3: Implement lazy model loading and thread offload**
+- [x] **Step 3: Implement lazy model loading and thread offload**
 
 Import `faster_whisper` only inside the default model factory. Cache one model per adapter instance under an async lock. Run model construction and `.transcribe()` through `asyncio.to_thread`.
 
@@ -420,7 +420,7 @@ Diagnostics checks:
 - configured model/device/compute type;
 - no model download or inference.
 
-- [ ] **Step 4: Add real smoke test**
+- [x] **Step 4: Add real smoke test**
 
 ```python
 @pytest.mark.integration
@@ -437,7 +437,7 @@ async def test_real_faster_whisper_recognizes_chinese(turn_context) -> None:
     assert result.language == "zh"
 ```
 
-- [ ] **Step 5: Run unit and optional real tests**
+- [x] **Step 5: Run unit and optional real tests**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_faster_whisper_adapter.py -v`
 
@@ -449,7 +449,7 @@ When model access is available:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/bionic_head/adapters/faster_whisper.py src/bionic_head/adapters/registry.py tests

@@ -250,15 +250,24 @@ def _build_llm(settings: AppSettings) -> LLMAdapter:
     raise _provider_unavailable(settings.adapters.llm.provider)
 
 
+def _build_asr(settings: AppSettings) -> ASRAdapter:
+    if settings.adapters.asr.provider == "mock":
+        return MockASRAdapter(settings.mock, settings.adapters.asr)
+    if settings.adapters.asr.provider == "faster-whisper":
+        from bionic_head.adapters.faster_whisper import FasterWhisperASRAdapter
+
+        return FasterWhisperASRAdapter(settings.providers.faster_whisper)
+    raise _provider_unavailable(settings.adapters.asr.provider)
+
+
 def build_registry(settings: AppSettings) -> AdapterRegistry:
-    _ensure_mock(settings.adapters.asr)
     _ensure_mock(settings.adapters.tts)
     _ensure_mock(settings.adapters.audio2face)
     _ensure_mock(settings.adapters.ue5)
 
     return AdapterRegistry(
         asr=_ASRWrapper(
-            MockASRAdapter(settings.mock, settings.adapters.asr),
+            _build_asr(settings),
             settings.adapters.asr,
             "asr",
         ),
