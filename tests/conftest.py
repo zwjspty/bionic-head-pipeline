@@ -80,3 +80,12 @@ def offline_orchestrator(mock_settings, mock_registry, artifact_store):
         store=artifact_store,
         commit_if_current=always_current,
     )
+
+
+@pytest.fixture
+def app(mock_settings, tmp_path: Path):
+    from bionic_head.api.app import create_app
+
+    settings = mock_settings.model_copy(deep=True)
+    settings.storage.root = tmp_path / "api-data"
+    return create_app(settings)
