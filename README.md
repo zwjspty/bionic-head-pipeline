@@ -1,6 +1,6 @@
-# Bionic Head P0 Mock Service
+# Bionic Head Pipeline
 
-本仓库实现首版 P0：全 Mock、可重复测试的端到端语音到 UE5 52 维表情流水线。
+本仓库实现端到端语音到 UE5 52 维表情流水线。默认走 Mock provider，真实 provider 用于部署验收。
 
 当前能力：
 
@@ -8,6 +8,7 @@
 - `WS /pipeline/stream`：PCM16LE 伪流式输入，输出 LLM token、句子级 WAV、face frames、UE5 frame chunks。
 - `GET /health`、`GET /diagnostics`、`GET /pipeline/latest`、`GET /ue5/latest`。
 - Mock provider 支持固定输出、失败、超时和延迟配置。
+- 已提供 faster-whisper、Ollama、Piper、Morpheus 和 morpheus_52_raw 的真实 provider 接入骨架。
 - 默认测试不依赖 GPU、Conda、Ollama、Piper、Morpheus 或真实音频文件。
 
 ## 本地启动
@@ -38,5 +39,7 @@ BIONIC_CONFIG=config/mock.json .venv/bin/uvicorn bionic_head.api.app:create_app 
 - WebSocket：`docs/protocols/bionic-head-stream-v1.md`
 - UE5 JSON：`docs/protocols/bionic-head-ue5-v1.md`
 - Mock 开发：`docs/operations/mock-development.md`
+- WebSocket 测试客户端：`docs/operations/stream-client.md`
+- 真实 provider 部署验收：`docs/operations/real-providers.md`
 
-P0 只声明 `morpheus_52_raw`，不声明 ARKit 或 MetaHuman 映射。
+首版只声明 `morpheus_52_raw`，不声明 ARKit 或 MetaHuman 映射。

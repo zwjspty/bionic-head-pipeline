@@ -921,7 +921,7 @@ git commit -m "feat: add websocket validation client"
 - Produces: repeated benchmark runner and `latency_report.json` with count, failures, P50, and P90.
 - Consumes: `timeline.json` metrics from successful turns.
 
-- [ ] **Step 1: Write failing percentile test**
+- [x] **Step 1: Write failing percentile test**
 
 ```python
 # tests/unit/test_latency_report.py
@@ -933,13 +933,13 @@ def test_summary_reports_nearest_rank_p50_p90() -> None:
     assert report == {"count": 5, "p50_ms": 300, "p90_ms": 500, "min_ms": 100, "max_ms": 500}
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_latency_report.py -v`
 
 Expected: FAIL because evaluation code does not exist.
 
-- [ ] **Step 3: Implement deterministic report generation**
+- [x] **Step 3: Implement deterministic report generation**
 
 Use nearest-rank percentile:
 
@@ -963,7 +963,7 @@ total_turn_duration_ms
 
 Include run count, success count, failure count, failure codes, provider names, timestamp, and source WAV path. Never mix failed-run missing metrics into percentile arrays.
 
-- [ ] **Step 4: Implement benchmark CLI**
+- [x] **Step 4: Implement benchmark CLI**
 
 CLI:
 
@@ -978,7 +978,7 @@ CLI:
 
 Run offline and stream modes separately via `--mode offline|stream`. For stream mode, reuse the tested client sender/receiver. Require at least 10 runs for a report used as acceptance evidence.
 
-- [ ] **Step 5: Write the real-provider runbook**
+- [x] **Step 5: Write the real-provider runbook**
 
 Document:
 
@@ -996,7 +996,7 @@ Document:
 
 Explicitly state that unknown Piper/Morpheus command data is a deployment blocker for their real smoke tests, not a blocker for the completed Mock service.
 
-- [ ] **Step 6: Run complete verification**
+- [x] **Step 6: Run complete verification**
 
 Run:
 
@@ -1018,7 +1018,7 @@ BIONIC_CONFIG=config/local.json BIONIC_TEST_WAV=/path/to/chinese.wav .venv/bin/p
 
 Expected: real tests pass and report contains P50/P90 for first token, first TTS, first face, first segment, and total duration.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/bionic_head/evaluation scripts/benchmark.py tests/unit/test_latency_report.py docs/operations/real-providers.md README.md
