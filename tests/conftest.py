@@ -57,3 +57,26 @@ def mock_registry(mock_settings):
     from bionic_head.adapters.registry import build_registry
 
     return build_registry(mock_settings)
+
+
+@pytest.fixture
+def artifact_store(tmp_path: Path):
+    from bionic_head.core.artifacts import ArtifactStore
+
+    return ArtifactStore(tmp_path / "data")
+
+
+@pytest.fixture
+def offline_orchestrator(mock_settings, mock_registry, artifact_store):
+    from bionic_head.orchestrators.offline import OfflineOrchestrator
+
+    async def always_current(_session_id, _turn_id, callback):
+        callback()
+        return True
+
+    return OfflineOrchestrator(
+        settings=mock_settings,
+        registry=mock_registry,
+        store=artifact_store,
+        commit_if_current=always_current,
+    )
