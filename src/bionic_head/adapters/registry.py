@@ -273,10 +273,30 @@ def _build_tts(settings: AppSettings) -> TTSAdapter:
     raise _provider_unavailable(settings.adapters.tts.provider)
 
 
-def build_registry(settings: AppSettings) -> AdapterRegistry:
-    _ensure_mock(settings.adapters.audio2face)
-    _ensure_mock(settings.adapters.ue5)
+def _build_audio2face(settings: AppSettings) -> Audio2FaceAdapter:
+    if settings.adapters.audio2face.provider == "mock":
+        return MockAudio2FaceAdapter(settings.mock, settings.adapters.audio2face)
+    if settings.adapters.audio2face.provider == "morpheus":
+        from bionic_head.adapters.morpheus import MorpheusAudio2FaceAdapter
 
+        return MorpheusAudio2FaceAdapter.from_settings(
+            settings.providers.morpheus,
+            grace_seconds=settings.limits.subprocess_terminate_grace_seconds,
+        )
+    raise _provider_unavailable(settings.adapters.audio2face.provider)
+
+
+def _build_ue5(settings: AppSettings) -> UE5Adapter:
+    if settings.adapters.ue5.provider == "mock":
+        return MockUE5Adapter(settings.mock, settings.adapters.ue5)
+    if settings.adapters.ue5.provider == "morpheus-raw":
+        from bionic_head.adapters.morpheus_raw import MorpheusRawUE5Adapter
+
+        return MorpheusRawUE5Adapter()
+    raise _provider_unavailable(settings.adapters.ue5.provider)
+
+
+def build_registry(settings: AppSettings) -> AdapterRegistry:
     return AdapterRegistry(
         asr=_ASRWrapper(
             _build_asr(settings),
@@ -294,12 +314,12 @@ def build_registry(settings: AppSettings) -> AdapterRegistry:
             "tts",
         ),
         audio2face=_Audio2FaceWrapper(
-            MockAudio2FaceAdapter(settings.mock, settings.adapters.audio2face),
+            _build_audio2face(settings),
             settings.adapters.audio2face,
             "audio2face",
         ),
         ue5=_UE5Wrapper(
-            MockUE5Adapter(settings.mock, settings.adapters.ue5),
+            _build_ue5(settings),
             settings.adapters.ue5,
             "ue5",
         ),

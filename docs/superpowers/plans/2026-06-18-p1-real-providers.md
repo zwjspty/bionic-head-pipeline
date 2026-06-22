@@ -570,7 +570,7 @@ git commit -m "feat: add piper tts provider"
   - validated `FaceArtifact` and `UE5Payload`.
 - Consumes: command template, output globs, NumPy `.npy`, optional JSON artifacts.
 
-- [ ] **Step 1: Write failing output-discovery tests**
+- [x] **Step 1: Write failing output-discovery tests**
 
 ```python
 # tests/unit/test_morpheus_adapter.py
@@ -595,13 +595,13 @@ async def test_morpheus_loads_n_by_52_output(fake_morpheus_script, mock_audio, t
 
 Define `fake_morpheus_script` in the test module. It accepts input and output directory arguments and writes one finite NumPy array shaped `[6, 52]`; separate variants write no file, multiple files, `[6, 51]`, NaN values, sleep past timeout, and ignore terminate long enough to exercise kill. Define `mock_audio` from a valid WAV using `audio_artifact_from_wav`.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_morpheus_adapter.py -v`
 
 Expected: FAIL because Morpheus adapters do not exist.
 
-- [ ] **Step 3: Implement command and output validation**
+- [x] **Step 3: Implement command and output validation**
 
 Allowed template variables:
 
@@ -627,7 +627,7 @@ Diagnostics checks Conda executable, `lyyMor` environment presence through `cond
 
 `MorpheusRawUE5Adapter` delegates to the P0 `build_ue5_payload` and retains `protocol=bionic-head-ue5-v1`, `format=morpheus_52_raw`.
 
-- [ ] **Step 4: Add real smoke test**
+- [x] **Step 4: Add real smoke test**
 
 ```python
 @pytest.mark.integration
@@ -648,7 +648,7 @@ async def test_real_morpheus_produces_52_channels(turn_context) -> None:
     assert face.frame_count > 0
 ```
 
-- [ ] **Step 5: Run unit and optional real tests**
+- [x] **Step 5: Run unit and optional real tests**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_morpheus_adapter.py -v`
 
@@ -660,7 +660,7 @@ After the real command is confirmed:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/bionic_head/adapters/morpheus.py src/bionic_head/adapters/morpheus_raw.py src/bionic_head/adapters/registry.py tests
