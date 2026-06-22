@@ -43,3 +43,17 @@ def turn_context(tmp_path: Path) -> TurnContext:
         artifact_dir=artifact_dir,
         cancellation=CancellationToken(),
     )
+
+
+@pytest.fixture
+def mock_settings():
+    from bionic_head.config import load_settings
+
+    return load_settings(Path("config/mock.json"))
+
+
+@pytest.fixture
+def mock_registry(mock_settings):
+    from bionic_head.adapters.registry import build_registry
+
+    return build_registry(mock_settings)
