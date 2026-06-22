@@ -681,7 +681,7 @@ git commit -m "feat: add morpheus and raw ue5 providers"
 - Produces: per-adapter provider mixing and full real HTTP/WS smoke coverage.
 - Consumes: all real providers from Tasks 2–5.
 
-- [ ] **Step 1: Write failing mixed-registry test**
+- [x] **Step 1: Write failing mixed-registry test**
 
 ```python
 # tests/unit/test_real_registry.py
@@ -695,13 +695,13 @@ def test_registry_allows_mock_asr_and_real_ollama() -> None:
     assert registry.ue5.name == "morpheus-raw"
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_real_registry.py -v`
 
 Expected: FAIL until registry dispatch covers all real names.
 
-- [ ] **Step 3: Complete registry dispatch and startup behavior**
+- [x] **Step 3: Complete registry dispatch and startup behavior**
 
 Provider map:
 
@@ -715,7 +715,7 @@ UE5_PROVIDERS = {"mock": build_mock_ue5, "morpheus-raw": build_morpheus_raw}
 
 Construction must not run diagnostics or expensive model loading. Unknown provider names fail startup with a clear configuration error. Known but unconfigured real providers construct successfully and report unavailable through diagnostics; invoking them raises `provider_unavailable`.
 
-- [ ] **Step 4: Add real end-to-end tests**
+- [x] **Step 4: Add real end-to-end tests**
 
 Create integration fixtures:
 
@@ -781,13 +781,13 @@ Test setup:
 - each test skips with an explicit reason naming its missing environment variable;
 - fixture README documents the required Morpheus `[N,52]` and UE5 JSON reference samples.
 
-- [ ] **Step 5: Run all hermetic tests**
+- [x] **Step 5: Run all hermetic tests**
 
 Run: `.venv/bin/python -m pytest -m 'not integration' -v`
 
 Expected: PASS without faster-whisper installed and without external services.
 
-- [ ] **Step 6: Run staged real validation**
+- [x] **Step 6: Run staged real validation**
 
 Run each in this order:
 
@@ -801,7 +801,7 @@ BIONIC_CONFIG=config/local.json BIONIC_TEST_WAV=/path/to/chinese.wav .venv/bin/p
 
 Expected: each layer passes before running the next. If Piper or Morpheus command data remains unavailable, its test must SKIP with the exact missing configuration field named, not fail the Mock suite.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/bionic_head/adapters/registry.py src/bionic_head/api/dependencies.py tests
