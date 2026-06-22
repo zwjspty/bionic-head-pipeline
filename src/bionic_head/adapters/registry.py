@@ -240,9 +240,18 @@ def _ensure_mock(settings: AdapterSettings) -> None:
         raise _provider_unavailable(settings.provider)
 
 
+def _build_llm(settings: AppSettings) -> LLMAdapter:
+    if settings.adapters.llm.provider == "mock":
+        return MockLLMAdapter(settings.mock, settings.adapters.llm)
+    if settings.adapters.llm.provider == "ollama":
+        from bionic_head.adapters.ollama import OllamaLLMAdapter
+
+        return OllamaLLMAdapter(settings.providers.ollama)
+    raise _provider_unavailable(settings.adapters.llm.provider)
+
+
 def build_registry(settings: AppSettings) -> AdapterRegistry:
     _ensure_mock(settings.adapters.asr)
-    _ensure_mock(settings.adapters.llm)
     _ensure_mock(settings.adapters.tts)
     _ensure_mock(settings.adapters.audio2face)
     _ensure_mock(settings.adapters.ue5)
@@ -254,7 +263,7 @@ def build_registry(settings: AppSettings) -> AdapterRegistry:
             "asr",
         ),
         llm=_LLMWrapper(
-            MockLLMAdapter(settings.mock, settings.adapters.llm),
+            _build_llm(settings),
             settings.adapters.llm,
             "llm",
         ),

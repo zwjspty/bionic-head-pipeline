@@ -233,7 +233,7 @@ git commit -m "feat: add real provider process infrastructure"
 - Produces: `OllamaLLMAdapter` implementing P0 `LLMAdapter`.
 - Consumes: `/api/chat` streaming NDJSON and target model `qwen2.5:3b`.
 
-- [ ] **Step 1: Write failing unit tests with HTTPX MockTransport**
+- [x] **Step 1: Write failing unit tests with HTTPX MockTransport**
 
 ```python
 # tests/unit/test_ollama_adapter.py
@@ -270,13 +270,13 @@ async def test_streams_tokens_and_parses_final_emotion(turn_context) -> None:
     assert events[-1].result.emotion.value == "friendly"
 ```
 
-- [ ] **Step 2: Run the unit test and verify failure**
+- [x] **Step 2: Run the unit test and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_ollama_adapter.py -v`
 
 Expected: FAIL because `OllamaLLMAdapter` does not exist.
 
-- [ ] **Step 3: Implement structured prompting and robust parsing**
+- [x] **Step 3: Implement structured prompting and robust parsing**
 
 Send `POST /api/chat`:
 
@@ -306,7 +306,7 @@ Diagnostics:
 3. available false if `qwen2.5:3b` is absent;
 4. never run generation.
 
-- [ ] **Step 4: Add integration smoke test**
+- [x] **Step 4: Add integration smoke test**
 
 ```python
 # tests/integration/providers/test_ollama.py
@@ -329,7 +329,7 @@ async def test_real_ollama_streams_valid_result(turn_context) -> None:
     assert 0.0 <= result.intensity <= 1.0
 ```
 
-- [ ] **Step 5: Run Mock and optional real tests**
+- [x] **Step 5: Run Mock and optional real tests**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_ollama_adapter.py -v`
 
@@ -341,7 +341,7 @@ When Ollama is available, run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/bionic_head/adapters/ollama.py src/bionic_head/adapters/registry.py tests
