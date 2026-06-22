@@ -260,8 +260,20 @@ def _build_asr(settings: AppSettings) -> ASRAdapter:
     raise _provider_unavailable(settings.adapters.asr.provider)
 
 
+def _build_tts(settings: AppSettings) -> TTSAdapter:
+    if settings.adapters.tts.provider == "mock":
+        return MockTTSAdapter(settings.mock, settings.adapters.tts)
+    if settings.adapters.tts.provider == "piper":
+        from bionic_head.adapters.piper import PiperTTSAdapter
+
+        return PiperTTSAdapter.from_settings(
+            settings.providers.piper,
+            grace_seconds=settings.limits.subprocess_terminate_grace_seconds,
+        )
+    raise _provider_unavailable(settings.adapters.tts.provider)
+
+
 def build_registry(settings: AppSettings) -> AdapterRegistry:
-    _ensure_mock(settings.adapters.tts)
     _ensure_mock(settings.adapters.audio2face)
     _ensure_mock(settings.adapters.ue5)
 
@@ -277,7 +289,7 @@ def build_registry(settings: AppSettings) -> AdapterRegistry:
             "llm",
         ),
         tts=_TTSWrapper(
-            MockTTSAdapter(settings.mock, settings.adapters.tts),
+            _build_tts(settings),
             settings.adapters.tts,
             "tts",
         ),

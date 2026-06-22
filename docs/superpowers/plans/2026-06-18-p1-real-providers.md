@@ -468,7 +468,7 @@ git commit -m "feat: add faster whisper provider"
 - Produces: `PiperTTSAdapter` implementing P0 `TTSAdapter`.
 - Consumes: configurable executable, model path, argument template, and `run_command`.
 
-- [ ] **Step 1: Write failing argument and output tests**
+- [x] **Step 1: Write failing argument and output tests**
 
 ```python
 # tests/unit/test_piper_adapter.py
@@ -494,13 +494,13 @@ async def test_piper_writes_and_validates_wav(fake_piper_script, turn_context) -
 
 Define `fake_piper_script` in the test module. It is a temporary Python program that accepts the output path as its final argument and writes a valid mono, PCM16, 16 kHz WAV; separate test variants exit nonzero, sleep past timeout, and write invalid bytes.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_piper_adapter.py -v`
 
 Expected: FAIL because the adapter does not exist.
 
-- [ ] **Step 3: Implement safe command rendering**
+- [x] **Step 3: Implement safe command rendering**
 
 Allow only these template variables:
 
@@ -516,7 +516,7 @@ Create output under `turn_context.artifact_dir / "tts" / f"{chunk_id}.wav"`. Aft
 
 Diagnostics verifies executable with `shutil.which` or an executable absolute path, model file existence, writable output root, and valid template variables. It does not synthesize.
 
-- [ ] **Step 4: Add real smoke test**
+- [x] **Step 4: Add real smoke test**
 
 ```python
 @pytest.mark.integration
@@ -535,7 +535,7 @@ async def test_real_piper_generates_playable_wav(turn_context) -> None:
     assert audio.duration_seconds > 0
 ```
 
-- [ ] **Step 5: Run unit and optional real tests**
+- [x] **Step 5: Run unit and optional real tests**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_piper_adapter.py -v`
 
@@ -547,7 +547,7 @@ After deployment paths are configured:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/bionic_head/adapters/piper.py src/bionic_head/adapters/registry.py tests

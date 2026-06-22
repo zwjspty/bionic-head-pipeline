@@ -19,14 +19,14 @@ def test_build_registry_returns_all_mock_adapters(mock_settings) -> None:
 
 def test_unknown_provider_fails_at_startup(mock_settings) -> None:
     settings = mock_settings.model_copy(deep=True)
-    settings.adapters.tts.provider = "piper"
+    settings.adapters.tts.provider = "not-a-provider"
 
     with pytest.raises(PipelineException) as captured:
         build_registry(settings)
 
     assert captured.value.code is ErrorCode.PROVIDER_UNAVAILABLE
     assert captured.value.stage == "startup"
-    assert captured.value.provider == "piper"
+    assert captured.value.provider == "not-a-provider"
 
 
 @pytest.mark.asyncio
