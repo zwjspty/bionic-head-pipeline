@@ -1,6 +1,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -8,8 +9,9 @@ from bionic_head.adapters.morpheus import MorpheusAudio2FaceAdapter
 from bionic_head.adapters.morpheus_raw import MorpheusRawUE5Adapter
 from bionic_head.adapters.registry import build_registry
 from bionic_head.core.audio import audio_artifact_from_wav
+from bionic_head.core.cancellation import CancellationToken
 from bionic_head.domain.errors import ErrorCode, PipelineException
-from bionic_head.domain.models import Emotion
+from bionic_head.domain.models import Emotion, TurnContext
 
 
 def _write_script(path: Path, body: str) -> Path:
@@ -71,6 +73,54 @@ async def test_morpheus_loads_n_by_52_output(
     assert face.path is not None
     assert face.path.name == "face.npy"
     assert [path.name for path in face.auxiliary_paths] == ["meta.json"]
+
+
+@pytest.mark.asyncio
+async def test_morpheus_templates_render_absolute_paths_when_cwd_differs(
+    tmp_path,
+    monkeypatch,
+    speech_wav,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    audio = audio_artifact_from_wav(Path("speech.wav"))
+    artifact_dir = Path("turn")
+    artifact_dir.mkdir()
+    external_cwd = tmp_path / "external"
+    external_cwd.mkdir()
+    context = TurnContext(
+        session_id=uuid4(),
+        turn_id=uuid4(),
+        artifact_dir=artifact_dir,
+        cancellation=CancellationToken(),
+    )
+    script = _write_script(
+        tmp_path / "require_absolute_paths.py",
+        """
+import pathlib
+import sys
+
+import numpy as np
+
+input_path = pathlib.Path(sys.argv[1])
+output_dir = pathlib.Path(sys.argv[2])
+if not input_path.is_absolute():
+    print("input path is not absolute", file=sys.stderr)
+    sys.exit(3)
+if not output_dir.is_absolute():
+    print("output dir is not absolute", file=sys.stderr)
+    sys.exit(4)
+if not input_path.exists():
+    print("input path does not exist", file=sys.stderr)
+    sys.exit(5)
+output_dir.mkdir(parents=True, exist_ok=True)
+np.save(output_dir / "face.npy", np.zeros((2, 52), dtype=np.float32))
+""",
+    )
+    adapter = _adapter(script, cwd=external_cwd)
+
+    face = await adapter.drive(audio, Emotion.FRIENDLY, 0.8, context)
+
+    assert face.frame_count == 2
 
 
 @pytest.mark.asyncio

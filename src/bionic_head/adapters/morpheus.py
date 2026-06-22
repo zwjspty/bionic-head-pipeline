@@ -195,8 +195,8 @@ class MorpheusAudio2FaceAdapter:
         intensity: float,
     ) -> list[str]:
         values = {
-            "input_path": str(input_path),
-            "output_dir": str(output_dir),
+            "input_path": str(input_path.resolve()),
+            "output_dir": str(output_dir.resolve()),
             "emotion": emotion.value,
             "intensity": str(float(intensity)),
         }
