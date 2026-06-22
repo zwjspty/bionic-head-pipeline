@@ -66,16 +66,19 @@ class TurnHandle:
     def terminal_event(self) -> EventType | None:
         return self._terminal_event
 
+    def is_current(self) -> bool:
+        return self.current and not self.cancellation.cancelled and self.terminal_event is None
+
     async def emit_if_current(self, operation: Callable[[], Awaitable[None]]) -> bool:
         async with self._lock:
-            if not self.current or self.cancellation.cancelled:
+            if not self.is_current():
                 return False
             await operation()
             return True
 
     async def commit_if_current(self, callback: Callable[[], None]) -> bool:
         async with self._lock:
-            if not self.current or self.cancellation.cancelled:
+            if not self.is_current():
                 return False
             callback()
             return True
