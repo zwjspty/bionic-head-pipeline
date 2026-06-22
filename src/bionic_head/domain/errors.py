@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from enum import Enum
 
+try:  # Python 3.10 fallback for local verification
+    from enum import StrEnum
+except ImportError:  # pragma: no cover
+    class StrEnum(str, Enum):
+        pass
 
-class ErrorCode(str, Enum):
+
+class ErrorCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     INVALID_AUDIO_FORMAT = "invalid_audio_format"
     NO_SPEECH_DETECTED = "no_speech_detected"

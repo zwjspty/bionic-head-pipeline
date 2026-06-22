@@ -28,6 +28,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
   "integration: requires real external providers",
