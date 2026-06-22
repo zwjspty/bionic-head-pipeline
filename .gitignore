@@ -1,1 +1,8 @@
-.worktrees/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+config/local.json
+data/runs/
+data/latest/

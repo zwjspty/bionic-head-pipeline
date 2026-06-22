@@ -1,0 +1,48 @@
+{
+  "server": {"host": "127.0.0.1", "port": 8000, "max_active_sessions": 1},
+  "stream": {
+    "silence_timeout_ms": 1000,
+    "max_turn_duration_seconds": 30,
+    "silence_rms_threshold": 0.01,
+    "input_sample_rate": 16000,
+    "input_channels": 1,
+    "input_sample_width_bytes": 2,
+    "sentence_max_chars": 80,
+    "sentence_max_wait_ms": 500
+  },
+  "retention": {"max_runs": 100},
+  "limits": {"morpheus_max_concurrency": 1, "subprocess_terminate_grace_seconds": 2},
+  "adapters": {
+    "asr": {
+      "provider": "faster-whisper",
+      "timeout_seconds": 5,
+      "executable": "",
+      "model": ""
+    },
+    "llm": {
+      "provider": "ollama",
+      "timeout_seconds": 5,
+      "command": "",
+      "model": ""
+    },
+    "tts": {
+      "provider": "piper",
+      "timeout_seconds": 5,
+      "executable": "",
+      "model": ""
+    },
+    "audio2face": {
+      "provider": "morpheus",
+      "timeout_seconds": 5,
+      "executable": "",
+      "command": ""
+    },
+    "ue5": {
+      "provider": "morpheus-raw",
+      "timeout_seconds": 5,
+      "executable": "",
+      "command": ""
+    }
+  },
+  "storage": {"root": "data"}
+}

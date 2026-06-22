@@ -1,0 +1,32 @@
+{
+  "server": {"host": "127.0.0.1", "port": 8000, "max_active_sessions": 1},
+  "stream": {
+    "silence_timeout_ms": 1000,
+    "max_turn_duration_seconds": 30,
+    "silence_rms_threshold": 0.01,
+    "input_sample_rate": 16000,
+    "input_channels": 1,
+    "input_sample_width_bytes": 2,
+    "sentence_max_chars": 80,
+    "sentence_max_wait_ms": 500
+  },
+  "retention": {"max_runs": 100},
+  "limits": {"morpheus_max_concurrency": 1, "subprocess_terminate_grace_seconds": 2},
+  "adapters": {
+    "asr": {"provider": "mock", "timeout_seconds": 5},
+    "llm": {"provider": "mock", "timeout_seconds": 5},
+    "tts": {"provider": "mock", "timeout_seconds": 5},
+    "audio2face": {"provider": "mock", "timeout_seconds": 5},
+    "ue5": {"provider": "mock", "timeout_seconds": 5}
+  },
+  "mock": {
+    "latency_ms": {"asr": 0, "llm_first_token": 0, "llm_token": 0, "tts": 0, "face": 0},
+    "fail_stage": null,
+    "timeout_stage": null,
+    "asr_text": "你好",
+    "reply": "你好！很高兴见到你。",
+    "emotion": "friendly",
+    "intensity": 0.8
+  },
+  "storage": {"root": "data"}
+}
