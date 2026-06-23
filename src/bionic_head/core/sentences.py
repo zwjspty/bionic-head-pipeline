@@ -26,7 +26,7 @@ class SentenceBuffer:
     def _drain_ready(self) -> list[str]:
         segments: list[str] = []
         while self._buffer:
-            if self._buffer[-1] in PUNCTUATION and len(self._buffer) >= self.min_chars - 1:
+            if self._buffer[-1] in PUNCTUATION and len(self._buffer) >= self.min_chars:
                 split_at = len(self._buffer)
             elif len(self._buffer) >= self.max_chars:
                 split_at = self.max_chars
