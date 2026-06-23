@@ -17,6 +17,13 @@ Run with:
 BIONIC_CONFIG=config/local.json .venv/bin/uvicorn bionic_head.api.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
+For the current local machine, where EmoTalk is available but the original Morpheus
+environment is not, start from the EmoTalk template instead:
+
+```bash
+cp config/emotalk.example.json config/local.json
+```
+
 ## Fill `config/local.json`
 
 1. Confirm Ollama is running and `qwen2.5:3b` is available.
@@ -33,6 +40,24 @@ BIONIC_CONFIG=config/local.json .venv/bin/uvicorn bionic_head.api.app:create_app
 
 Unknown Piper or Morpheus command data is a deployment blocker for their real smoke tests, not a blocker for the completed Mock service.
 
+## Local EmoTalk Audio2Face option
+
+`audio2face.provider = "emotalk"` is a real local Audio2Face provider for the
+available EmoTalk model. It reuses the same external-command safety behavior as
+the Morpheus adapter: argument-array execution, timeout handling, cancellation,
+single-output validation, and `[N, 52]` finite blendshape checks.
+
+Use it when this machine has:
+
+- `/home/user/miniconda3/bin/conda`;
+- Conda env `emotalk`;
+- `/home/user/code/EmoTalk_release/scripts/export_blendshape_from_audio.py`;
+- output written as `{output_dir}/emotalk.npy`.
+
+This does not mean the deployment Morpheus provider is complete. Morpheus remains
+blocked until the `lyyMor` environment, Morpheus project path, and exact command
+format are confirmed on the target machine.
+
 ## Validation order
 
 ```bash
@@ -43,6 +68,10 @@ BIONIC_CONFIG=config/local.json .venv/bin/python -m pytest tests/integration/pro
 BIONIC_CONFIG=config/local.json BIONIC_TEST_TTS_WAV=/path/to/tts.wav .venv/bin/python -m pytest tests/integration/providers/test_morpheus.py -m integration -v
 BIONIC_CONFIG=config/local.json BIONIC_TEST_WAV=/path/to/chinese.wav .venv/bin/python -m pytest tests/integration/test_real_pipeline.py -m integration -v
 ```
+
+When using `config/emotalk.example.json`, the Morpheus provider smoke test is not
+the right isolated check; validate the full pipeline instead and confirm
+`/diagnostics` reports `audio2face.provider = emotalk`.
 
 Then run the protocol client:
 

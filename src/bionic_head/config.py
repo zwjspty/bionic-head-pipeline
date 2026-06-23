@@ -123,6 +123,11 @@ class MorpheusSettings(CommandSettings):
     output_json_glob: str = "*.json"
 
 
+class EmoTalkSettings(CommandSettings):
+    output_npy_glob: str = "*.npy"
+    output_json_glob: str = "*.json"
+
+
 class ProvidersSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -130,6 +135,7 @@ class ProvidersSettings(BaseModel):
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     piper: PiperSettings = Field(default_factory=PiperSettings)
     morpheus: MorpheusSettings = Field(default_factory=MorpheusSettings)
+    emotalk: EmoTalkSettings = Field(default_factory=EmoTalkSettings)
 
 
 class StorageSettings(BaseModel):

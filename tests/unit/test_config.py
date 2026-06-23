@@ -52,6 +52,30 @@ def test_load_real_example_settings() -> None:
     assert settings.providers.morpheus.timeout_seconds == 300
 
 
+def test_load_emotalk_example_settings() -> None:
+    settings = load_settings(Path("config/emotalk.example.json"))
+
+    assert settings.adapters.audio2face.provider == "emotalk"
+    assert settings.adapters.ue5.provider == "morpheus-raw"
+    assert settings.providers.emotalk.executable == "/home/user/miniconda3/bin/conda"
+    assert settings.providers.emotalk.args == [
+        "run",
+        "-n",
+        "emotalk",
+        "python",
+        "/home/user/code/EmoTalk_release/scripts/export_blendshape_from_audio.py",
+        "--wav_path",
+        "{input_path}",
+        "--out_path",
+        "{output_dir}/emotalk.npy",
+        "--device",
+        "cpu",
+    ]
+    assert settings.providers.emotalk.cwd == Path("/home/user/code/EmoTalk_release")
+    assert settings.providers.emotalk.output_npy_glob == "*.npy"
+    assert settings.providers.emotalk.timeout_seconds == 300
+
+
 def test_rejects_unsupported_sample_width() -> None:
     with pytest.raises(ValidationError):
         AppSettings.model_validate(

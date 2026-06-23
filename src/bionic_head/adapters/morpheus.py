@@ -21,75 +21,6 @@ from bionic_head.domain.models import AudioArtifact, DiagnosticResult, Emotion, 
 ALLOWED_TEMPLATE_FIELDS = {"input_path", "output_dir", "emotion", "intensity"}
 
 
-def _audio2face_error(
-    *,
-    code: ErrorCode,
-    message: str,
-    retryable: bool,
-) -> PipelineException:
-    return PipelineException(
-        code=code,
-        stage="audio2face",
-        provider="morpheus",
-        retryable=retryable,
-        message=message,
-    )
-
-
-def _invalid_request(message: str) -> PipelineException:
-    return _audio2face_error(
-        code=ErrorCode.INVALID_REQUEST,
-        message=message,
-        retryable=False,
-    )
-
-
-def _output_invalid(message: str) -> PipelineException:
-    return _audio2face_error(
-        code=ErrorCode.OUTPUT_VALIDATION_FAILED,
-        message=message,
-        retryable=False,
-    )
-
-
-def _map_process_error(exc: PipelineException) -> PipelineException:
-    if exc.code is ErrorCode.PROVIDER_TIMEOUT:
-        return _audio2face_error(
-            code=ErrorCode.PROVIDER_TIMEOUT,
-            message="Morpheus processing timed out",
-            retryable=True,
-        )
-    if exc.code is ErrorCode.PROVIDER_UNAVAILABLE:
-        return _audio2face_error(
-            code=ErrorCode.PROVIDER_UNAVAILABLE,
-            message="Morpheus command is unavailable",
-            retryable=False,
-        )
-    return _audio2face_error(
-        code=ErrorCode.PROVIDER_FAILED,
-        message="Morpheus processing failed",
-        retryable=True,
-    )
-
-
-def _template_fields(args: list[str]) -> set[str]:
-    fields: set[str] = set()
-    formatter = string.Formatter()
-    for arg in args:
-        try:
-            for _, field_name, format_spec, conversion in formatter.parse(arg):
-                if field_name is None:
-                    continue
-                if format_spec or conversion:
-                    raise _invalid_request("Morpheus templates cannot use format modifiers")
-                if field_name not in ALLOWED_TEMPLATE_FIELDS:
-                    raise _invalid_request(f"Unknown Morpheus template variable: {field_name}")
-                fields.add(field_name)
-        except ValueError as exc:
-            raise _invalid_request("Invalid Morpheus command template") from exc
-    return fields
-
-
 def _executable_available(executable: str) -> bool:
     if not executable:
         return False
@@ -101,6 +32,8 @@ def _executable_available(executable: str) -> bool:
 
 class MorpheusAudio2FaceAdapter:
     name = "morpheus"
+    label = "Morpheus"
+    output_prefix = "morpheus"
     _shared_semaphore = asyncio.Semaphore(1)
 
     def __init__(
@@ -123,11 +56,11 @@ class MorpheusAudio2FaceAdapter:
         self.grace_seconds = grace_seconds
         self.cwd = Path(cwd) if cwd is not None else None
         self.call_count = 0
-        self._fields = _template_fields(args)
+        self._fields = self._template_fields(args)
         self._semaphore = semaphore or self._shared_semaphore
         if "input_path" not in self._fields or "output_dir" not in self._fields:
-            raise _invalid_request(
-                "Morpheus command template must include {input_path} and {output_dir}"
+            raise self._invalid_request(
+                f"{self.label} command template must include {{input_path}} and {{output_dir}}"
             )
 
     @classmethod
@@ -156,7 +89,7 @@ class MorpheusAudio2FaceAdapter:
     ) -> FaceArtifact:
         context.cancellation.raise_if_cancelled()
         self.call_count += 1
-        output_dir = context.artifact_dir / "face" / f"morpheus_{self.call_count:04d}"
+        output_dir = context.artifact_dir / "face" / f"{self.output_prefix}_{self.call_count:04d}"
         output_dir.mkdir(parents=True, exist_ok=True)
         command_args = [
             self.executable,
@@ -181,10 +114,79 @@ class MorpheusAudio2FaceAdapter:
         except asyncio.CancelledError:
             raise
         except PipelineException as exc:
-            raise _map_process_error(exc) from exc
+            raise self._map_process_error(exc) from exc
 
         context.cancellation.raise_if_cancelled()
         return self._load_face_artifact(output_dir, audio)
+
+    def _audio2face_error(
+        self,
+        *,
+        code: ErrorCode,
+        message: str,
+        retryable: bool,
+    ) -> PipelineException:
+        return PipelineException(
+            code=code,
+            stage="audio2face",
+            provider=self.name,
+            retryable=retryable,
+            message=message,
+        )
+
+    def _invalid_request(self, message: str) -> PipelineException:
+        return self._audio2face_error(
+            code=ErrorCode.INVALID_REQUEST,
+            message=message,
+            retryable=False,
+        )
+
+    def _output_invalid(self, message: str) -> PipelineException:
+        return self._audio2face_error(
+            code=ErrorCode.OUTPUT_VALIDATION_FAILED,
+            message=message,
+            retryable=False,
+        )
+
+    def _map_process_error(self, exc: PipelineException) -> PipelineException:
+        if exc.code is ErrorCode.PROVIDER_TIMEOUT:
+            return self._audio2face_error(
+                code=ErrorCode.PROVIDER_TIMEOUT,
+                message=f"{self.label} processing timed out",
+                retryable=True,
+            )
+        if exc.code is ErrorCode.PROVIDER_UNAVAILABLE:
+            return self._audio2face_error(
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                message=f"{self.label} command is unavailable",
+                retryable=False,
+            )
+        return self._audio2face_error(
+            code=ErrorCode.PROVIDER_FAILED,
+            message=f"{self.label} processing failed",
+            retryable=True,
+        )
+
+    def _template_fields(self, args: list[str]) -> set[str]:
+        fields: set[str] = set()
+        formatter = string.Formatter()
+        for arg in args:
+            try:
+                for _, field_name, format_spec, conversion in formatter.parse(arg):
+                    if field_name is None:
+                        continue
+                    if format_spec or conversion:
+                        raise self._invalid_request(
+                            f"{self.label} templates cannot use format modifiers"
+                        )
+                    if field_name not in ALLOWED_TEMPLATE_FIELDS:
+                        raise self._invalid_request(
+                            f"Unknown {self.label} template variable: {field_name}"
+                        )
+                    fields.add(field_name)
+            except ValueError as exc:
+                raise self._invalid_request(f"Invalid {self.label} command template") from exc
+        return fields
 
     def _render_args(
         self,
@@ -205,22 +207,22 @@ class MorpheusAudio2FaceAdapter:
     def _load_face_artifact(self, output_dir: Path, audio: AudioArtifact) -> FaceArtifact:
         npy_paths = sorted(output_dir.glob(self.output_npy_glob))
         if not npy_paths:
-            raise _output_invalid("Morpheus did not write an npy output")
+            raise self._output_invalid(f"{self.label} did not write an npy output")
         if len(npy_paths) > 1:
-            raise _output_invalid("Morpheus wrote multiple npy outputs")
+            raise self._output_invalid(f"{self.label} wrote multiple npy outputs")
 
         npy_path = npy_paths[0]
         try:
             array = np.load(npy_path, allow_pickle=False)
         except (OSError, ValueError) as exc:
-            raise _output_invalid("Morpheus npy output could not be loaded") from exc
+            raise self._output_invalid(f"{self.label} npy output could not be loaded") from exc
 
         if array.ndim != 2 or array.shape[1] != 52:
-            raise _output_invalid("Morpheus output must have shape [N, 52]")
+            raise self._output_invalid(f"{self.label} output must have shape [N, 52]")
         if array.shape[0] <= 0:
-            raise _output_invalid("Morpheus output must contain at least one frame")
+            raise self._output_invalid(f"{self.label} output must contain at least one frame")
         if not np.isfinite(array).all():
-            raise _output_invalid("Morpheus output weights must be finite")
+            raise self._output_invalid(f"{self.label} output weights must be finite")
 
         json_paths = sorted(output_dir.glob(self.output_json_glob))
         fps = self._fps_from_json(json_paths) or 30
@@ -264,7 +266,7 @@ class MorpheusAudio2FaceAdapter:
         tolerance = max(0.1, 1.0 / float(fps))
         if abs(frame_duration - audio_duration) > tolerance:
             return [
-                "Morpheus frame duration differs from audio duration "
+                f"{self.label} frame duration differs from audio duration "
                 f"({frame_duration:.3f}s vs {audio_duration:.3f}s)"
             ]
         return []
@@ -275,24 +277,24 @@ class MorpheusAudio2FaceAdapter:
             return self._diagnostic(
                 available=False,
                 started=started,
-                message="Morpheus executable is unavailable",
+                message=f"{self.label} executable is unavailable",
             )
         if any(arg == "" for arg in self.args):
             return self._diagnostic(
                 available=False,
                 started=started,
-                message="Morpheus command contains an empty argument",
+                message=f"{self.label} command contains an empty argument",
             )
         if self.cwd is not None and not self.cwd.exists():
             return self._diagnostic(
                 available=False,
                 started=started,
-                message="Morpheus project directory is missing",
+                message=f"{self.label} project directory is missing",
             )
         return self._diagnostic(
             available=True,
             started=started,
-            message="Morpheus provider configuration is ready",
+            message=f"{self.label} provider configuration is ready",
         )
 
     def _diagnostic(

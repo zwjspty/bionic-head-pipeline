@@ -283,6 +283,13 @@ def _build_audio2face(settings: AppSettings) -> Audio2FaceAdapter:
             settings.providers.morpheus,
             grace_seconds=settings.limits.subprocess_terminate_grace_seconds,
         )
+    if settings.adapters.audio2face.provider == "emotalk":
+        from bionic_head.adapters.emotalk import EmoTalkAudio2FaceAdapter
+
+        return EmoTalkAudio2FaceAdapter.from_settings(
+            settings.providers.emotalk,
+            grace_seconds=settings.limits.subprocess_terminate_grace_seconds,
+        )
     raise _provider_unavailable(settings.adapters.audio2face.provider)
 
 
