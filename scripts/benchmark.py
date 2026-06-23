@@ -3,9 +3,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import tempfile
 from pathlib import Path
 from time import perf_counter
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from bionic_head.evaluation.latency import build_latency_report
 
@@ -52,11 +57,36 @@ def run_stream_once(ws_url: str, wav_path: Path, output_dir: Path) -> dict[str, 
     started = perf_counter()
     terminal = asyncio.run(run_client(ws_url, wav_path, output_dir, chunk_ms=40))
     wall_ms = (perf_counter() - started) * 1000.0
+    summary = _read_stream_summary(output_dir)
     return {
         "success": terminal == "server.pipeline.done",
         "failure_code": None if terminal == "server.pipeline.done" else terminal,
-        "metrics": {"total_turn_duration_ms": wall_ms},
+        "metrics": stream_metrics_from_summary(summary, wall_ms=wall_ms),
     }
+
+
+def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -> dict[str, float]:
+    metrics = {"total_turn_duration_ms": wall_ms}
+    event_first_ms = summary.get("event_first_ms")
+    if not isinstance(event_first_ms, dict):
+        event_first_ms = {}
+
+    first_tts = _float_or_none(summary.get("first_tts_binary_ms"))
+    if first_tts is None:
+        first_tts = _float_or_none(event_first_ms.get("server.tts.audio"))
+    if first_tts is not None:
+        metrics["tts_first_audio_ms"] = first_tts
+        metrics["e2e_first_audible_ms"] = first_tts
+
+    first_face = _float_or_none(event_first_ms.get("server.face.frames"))
+    if first_face is not None:
+        metrics["face_first_chunk_ms"] = first_face
+
+    first_ue5 = _float_or_none(event_first_ms.get("server.ue5.frames"))
+    if first_ue5 is not None:
+        metrics["e2e_first_visible_face_ms"] = first_ue5
+
+    return metrics
 
 
 def main() -> None:
@@ -92,6 +122,23 @@ def _failure_code(response) -> str:
     if isinstance(error, dict) and isinstance(error.get("code"), str):
         return error["code"]
     return f"http_{response.status_code}"
+
+
+def _read_stream_summary(output_dir: Path) -> dict[str, object]:
+    path = output_dir / "summary.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _float_or_none(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 def _providers_from_timeline(timeline: object) -> dict[str, str]:

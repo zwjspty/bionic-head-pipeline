@@ -11,7 +11,8 @@ TURN_ID = UUID("00000000-0000-0000-0000-000000000002")
 
 
 def test_receiver_pairs_tts_metadata_with_next_binary(tmp_path) -> None:
-    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID)
+    now = iter([10.0, 10.125, 10.250])
+    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
 
     receiver.accept_json(
         server_event(
@@ -24,6 +25,8 @@ def test_receiver_pairs_tts_metadata_with_next_binary(tmp_path) -> None:
 
     assert (tmp_path / "tts/0.wav").read_bytes() == b"RIFF"
     assert receiver.summary["tts_chunks"] == 1
+    assert receiver.summary["event_first_ms"]["server.tts.audio"] == 125.0
+    assert receiver.summary["first_tts_binary_ms"] == 250.0
 
 
 def test_binary_length_mismatch_is_rejected(tmp_path) -> None:
@@ -67,7 +70,8 @@ def test_cancel_clears_pending_playback(tmp_path) -> None:
 
 
 def test_ue5_frames_are_saved_and_gap_is_rejected(tmp_path) -> None:
-    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID)
+    now = iter([20.0, 20.333])
+    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
     receiver.accept_json(
         server_event(
             event_type="server.ue5.frames",
@@ -82,6 +86,7 @@ def test_ue5_frames_are_saved_and_gap_is_rejected(tmp_path) -> None:
     )
 
     assert (tmp_path / "ue5/face-0000.json").exists()
+    assert receiver.summary["event_first_ms"]["server.ue5.frames"] == 333.0
 
     with pytest.raises(ProtocolError):
         receiver.accept_json(

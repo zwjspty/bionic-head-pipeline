@@ -7,6 +7,8 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
+from typing import Callable
 from uuid import UUID, uuid4
 
 
@@ -31,10 +33,13 @@ class ClientReceiver:
         *,
         session_id: UUID | None = None,
         turn_id: UUID | None = None,
+        clock: Callable[[], float] = perf_counter,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.session_id = session_id
         self.turn_id = turn_id
+        self._clock = clock
+        self._started = clock()
         self.next_sequence = 1
         self.pending_tts: PendingTTS | None = None
         self.pending_segments: dict[str, object] = {}
@@ -46,6 +51,8 @@ class ClientReceiver:
             "tts_chunks": 0,
             "ue5_chunks": 0,
             "terminal_event": None,
+            "event_first_ms": {},
+            "first_tts_binary_ms": None,
         }
         (self.output_dir / "tts").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "ue5").mkdir(parents=True, exist_ok=True)
@@ -59,6 +66,7 @@ class ClientReceiver:
             raise ProtocolError("server event payload must be an object")
 
         self.summary["events"] = int(self.summary["events"]) + 1
+        self._record_first_event(event_type)
         if event_type == "server.tts.audio":
             self._accept_tts_metadata(payload)
         elif event_type == "server.ue5.frames":
@@ -86,6 +94,8 @@ class ClientReceiver:
         path = self.output_dir / "tts" / f"{pending.chunk_id}.wav"
         path.write_bytes(payload)
         self.summary["tts_chunks"] = int(self.summary["tts_chunks"]) + 1
+        if self.summary["first_tts_binary_ms"] is None:
+            self.summary["first_tts_binary_ms"] = self._elapsed_ms()
         self.pending_tts = None
 
     def finish(self) -> None:
@@ -153,6 +163,16 @@ class ClientReceiver:
         self.terminal_event = event_type
         self.summary["terminal_event"] = event_type
         self.finish()
+
+    def _record_first_event(self, event_type: str) -> None:
+        first_events = self.summary["event_first_ms"]
+        if not isinstance(first_events, dict):
+            return
+        if event_type not in first_events:
+            first_events[event_type] = self._elapsed_ms()
+
+    def _elapsed_ms(self) -> float:
+        return round((self._clock() - self._started) * 1000.0, 3)
 
     def _append_event(self, envelope: dict[str, object]) -> None:
         with (self.output_dir / "events.jsonl").open("a", encoding="utf-8") as handle:

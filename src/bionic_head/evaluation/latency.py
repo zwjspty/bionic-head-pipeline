@@ -17,6 +17,31 @@ STREAM_MARK_METRICS = {
 }
 
 
+STAGE_METRICS = {
+    "asr_ms": "asr",
+    "llm_total_ms": "llm",
+    "tts_total_ms": "tts",
+    "face_total_ms": "audio2face",
+    "ue5_format_ms": "ue5",
+}
+
+
+TURN_MARK_METRICS = {
+    "llm_ttft_ms": ("asr_final", "llm_first_token"),
+    "tts_first_audio_ms": ("llm_first_token", "first_tts_ready"),
+    "face_first_chunk_ms": ("first_tts_ready", "first_face_ready"),
+    "e2e_first_audible_ms": ("audio_end", "first_tts_ready"),
+    "e2e_first_visible_face_ms": ("audio_end", "first_face_ready"),
+}
+
+
+REPORT_METRICS = {
+    *STREAM_MARK_METRICS,
+    *STAGE_METRICS,
+    *TURN_MARK_METRICS,
+}
+
+
 def percentile(values: list[float], fraction: float) -> float:
     if not values:
         raise ValueError("percentile requires at least one value")
@@ -56,17 +81,14 @@ def build_latency_report(
         for run in runs
         if run.get("success") is not True
     )
-    values_by_metric: dict[str, list[float]] = {
-        name: [] for name in STREAM_MARK_METRICS
-    }
+    values_by_metric: dict[str, list[float]] = {name: [] for name in sorted(REPORT_METRICS)}
     providers: dict[str, object] = {}
 
     for run in success_runs:
         if isinstance(run.get("providers"), dict):
             providers.update(run["providers"])  # type: ignore[arg-type]
         for name, value in extract_metrics(run).items():
-            if name in values_by_metric:
-                values_by_metric[name].append(value)
+            values_by_metric.setdefault(name, []).append(value)
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -85,26 +107,52 @@ def build_latency_report(
 
 
 def extract_metrics(run: dict[str, object]) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+
     direct = run.get("metrics")
     if isinstance(direct, dict):
-        return {
-            str(name): float(value)
-            for name, value in direct.items()
-            if isinstance(value, (int, float))
-        }
+        metrics.update(
+            {
+                str(name): float(value)
+                for name, value in direct.items()
+                if isinstance(value, (int, float))
+            }
+        )
 
     timeline = run.get("timeline")
     if not isinstance(timeline, dict):
-        return {}
+        return metrics
+    metrics.update(_stage_metrics(timeline))
     marks = timeline.get("marks")
     if not isinstance(marks, dict):
-        return {}
+        return metrics
 
-    metrics: dict[str, float] = {}
-    for name, (start_mark, end_mark) in STREAM_MARK_METRICS.items():
+    for name, (start_mark, end_mark) in {**STREAM_MARK_METRICS, **TURN_MARK_METRICS}.items():
         if start_mark not in marks or end_mark not in marks:
             continue
         metrics[name] = _delta_ms(str(marks[start_mark]), str(marks[end_mark]))
+    return metrics
+
+
+def _stage_metrics(timeline: dict[str, object]) -> dict[str, float]:
+    stages = timeline.get("stages")
+    if not isinstance(stages, list):
+        return {}
+
+    durations_by_stage: dict[str, float] = {}
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        name = stage.get("name")
+        duration = stage.get("duration_ms")
+        if not isinstance(name, str) or not isinstance(duration, (int, float)):
+            continue
+        durations_by_stage[name] = durations_by_stage.get(name, 0.0) + float(duration)
+
+    metrics: dict[str, float] = {}
+    for metric_name, stage_name in STAGE_METRICS.items():
+        if stage_name in durations_by_stage:
+            metrics[metric_name] = durations_by_stage[stage_name]
     return metrics
 
 
