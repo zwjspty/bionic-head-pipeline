@@ -328,23 +328,30 @@ def encode_response(response: SidecarResponse) -> bytes:
     return encode_message(response.to_header(), response.frames)
 
 
+def _read_exact(stream: BinaryIO, size: int, eof_message: str) -> bytes:
+    if size < 0:
+        raise SidecarProtocolError("read size must not be negative")
+    if size == 0:
+        return b""
+
+    data = bytearray()
+    while len(data) < size:
+        chunk = stream.read(size - len(data))
+        if not chunk:
+            raise SidecarProtocolError(eof_message)
+        data.extend(chunk)
+    return bytes(data)
+
+
 def read_message(stream: BinaryIO) -> tuple[dict[str, object], bytes]:
-    raw_prefix = stream.read(HEADER_PREFIX_SIZE)
-    if not raw_prefix:
-        raise SidecarProtocolError("stream ended before header length")
-    if len(raw_prefix) < HEADER_PREFIX_SIZE:
-        raise SidecarProtocolError("truncated header length prefix")
+    raw_prefix = _read_exact(stream, HEADER_PREFIX_SIZE, "stream ended before header length")
     header_len = struct.unpack(">I", raw_prefix)[0]
     if header_len <= 0:
         raise SidecarProtocolError("header length must be positive")
-    header_bytes = stream.read(header_len)
-    if len(header_bytes) < header_len:
-        raise SidecarProtocolError("truncated header payload")
+    header_bytes = _read_exact(stream, header_len, "truncated header payload")
     header, _ = decode_message(raw_prefix + header_bytes)
     body_len = _infer_body_length_from_header(header)
-    body = stream.read(body_len)
-    if len(body) < body_len:
-        raise SidecarProtocolError("truncated message body")
+    body = _read_exact(stream, body_len, "truncated message body")
     return header, body
 
 

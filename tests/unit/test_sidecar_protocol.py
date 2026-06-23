@@ -45,6 +45,26 @@ def _request(
     )
 
 
+class _ShortReadStream:
+    def __init__(self, payload: bytes, read_size: int) -> None:
+        self._payload = payload
+        self._read_size = read_size
+        self._offset = 0
+
+    def read(self, size: int = -1) -> bytes:
+        if self._offset >= len(self._payload):
+            return b""
+
+        if size < 0:
+            size = len(self._payload) - self._offset
+
+        chunk = min(size, self._read_size)
+        next_offset = self._offset + chunk
+        chunk_data = self._payload[self._offset : next_offset]
+        self._offset = next_offset
+        return bytes(chunk_data)
+
+
 def test_encode_decode_message_round_trip_preserves_large_raw_payload() -> None:
     header = {"protocol": PROTOCOL_VERSION, "session_id": "large"}
     body = b"\x00" * 70_000
@@ -125,6 +145,30 @@ def test_read_message_reads_two_back_to_back_messages() -> None:
     assert first_body == request.audio
     assert second_header == response.to_header()
     assert second_body == response_frames
+
+
+def test_read_message_supports_short_reads_for_prefix_header_and_body() -> None:
+    request = _request(session_id="short-read", turn_id="short-read", num_samples=4)
+    response = SidecarResponse.success(
+        session_id="resp-short-read",
+        turn_id="resp-short-read",
+        generation_epoch=12,
+        frame_count=1,
+        frames=np.arange(52, dtype=np.float32).tobytes(),
+        fps=30,
+        channel_count=52,
+    )
+    payload = encode_request(request) + encode_response(response)
+
+    stream = _ShortReadStream(payload, read_size=2)
+
+    first_header, first_body = read_message(stream)
+    second_header, second_body = read_message(stream)
+
+    assert first_header == request.to_header()
+    assert first_body == request.audio
+    assert second_header == response.to_header()
+    assert second_body == response.frames
 
 
 def test_request_round_trip_preserves_session_turn_epoch_and_pcm() -> None:
