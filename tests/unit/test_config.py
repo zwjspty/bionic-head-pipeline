@@ -115,3 +115,30 @@ def test_rejects_unsupported_sample_width() -> None:
                 "storage": {},
             }
         )
+
+
+def test_accepts_emotalk_sidecar_provider_config() -> None:
+    settings = AppSettings.model_validate(
+        {
+            "adapters": {
+                "audio2face": {
+                    "provider": "emotalk_sidecar",
+                    "timeout_seconds": 10,
+                }
+            },
+            "providers": {
+                "emotalk_sidecar": {
+                    "sidecar_command": ["python", "-m", "bionic_head.emotalk_fake_sidecar"],
+                    "sample_rate": 16000,
+                    "fps": 30,
+                    "timeout_seconds": 10.0,
+                    "channel_count": 52,
+                }
+            },
+        }
+    )
+
+    assert settings.adapters.audio2face.provider == "emotalk_sidecar"
+    assert settings.providers.emotalk_sidecar.sample_rate == 16000
+    assert settings.providers.emotalk_sidecar.fps == 30
+    assert settings.providers.emotalk_sidecar.timeout_seconds == pytest.approx(10.0)

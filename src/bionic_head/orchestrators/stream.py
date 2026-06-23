@@ -73,6 +73,7 @@ class StreamOrchestrator:
             turn_id=turn.turn_id,
             artifact_dir=turn_dir,
             cancellation=turn.cancellation,
+            generation_epoch=turn.generation_epoch,
         )
 
         def mark_once(name: str) -> None:

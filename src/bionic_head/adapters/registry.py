@@ -298,6 +298,10 @@ def _build_audio2face(settings: AppSettings) -> Audio2FaceAdapter:
             settings.providers.emotalk,
             grace_seconds=settings.limits.subprocess_terminate_grace_seconds,
         )
+    if settings.adapters.audio2face.provider == "emotalk_sidecar":
+        from bionic_head.adapters.emotalk_sidecar import EmoTalkSidecarAudio2FaceAdapter
+
+        return EmoTalkSidecarAudio2FaceAdapter.from_settings(settings.providers.emotalk_sidecar)
     raise _provider_unavailable(settings.adapters.audio2face.provider)
 
 

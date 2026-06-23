@@ -151,6 +151,17 @@ class EmoTalkSettings(CommandSettings):
     output_json_glob: str = "*.json"
 
 
+class EmoTalkSidecarSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sidecar_command: list[str] = Field(default_factory=list)
+    sample_rate: Literal[16000] = 16000
+    fps: int = Field(default=30, ge=1)
+    timeout_seconds: float = Field(default=10.0, gt=0)
+    channel_count: Literal[52] = 52
+    output_npy_name: str = "face.npy"
+
+
 class ProvidersSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -159,6 +170,7 @@ class ProvidersSettings(BaseModel):
     piper: PiperSettings = Field(default_factory=PiperSettings)
     morpheus: MorpheusSettings = Field(default_factory=MorpheusSettings)
     emotalk: EmoTalkSettings = Field(default_factory=EmoTalkSettings)
+    emotalk_sidecar: EmoTalkSidecarSettings = Field(default_factory=EmoTalkSidecarSettings)
 
 
 class StorageSettings(BaseModel):

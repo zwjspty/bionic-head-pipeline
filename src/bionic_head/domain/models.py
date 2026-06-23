@@ -186,3 +186,4 @@ class TurnContext:
     turn_id: UUID
     artifact_dir: Path
     cancellation: CancellationToken
+    generation_epoch: int = 0
