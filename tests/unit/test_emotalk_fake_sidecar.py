@@ -156,7 +156,12 @@ def test_subprocess_single_request_ok() -> None:
 def test_subprocess_continuous_requests_and_error_response() -> None:
     valid_a = encode_request(_valid_request(session_id="proc", turn_id="ok-1", generation_epoch=1))
     invalid_sample_rate = encode_request(
-        _valid_request(session_id="proc", turn_id="bad", generation_epoch=2, sample_rate=8000)
+        _valid_request(
+            session_id="proc",
+            turn_id="bad",
+            generation_epoch=2,
+            dtype="float32",
+        )
     )
     valid_b = encode_request(_valid_request(session_id="proc", turn_id="ok-2", generation_epoch=3))
     env = {**os.environ, "PYTHONPATH": "src"}
@@ -180,3 +185,46 @@ def test_subprocess_continuous_requests_and_error_response() -> None:
     assert result.returncode == 0
     assert b"\x00" not in result.stderr
     assert b"\n" not in result.stdout
+
+
+def test_serve_continuous_requests_with_invalid_dtype_continues() -> None:
+    stdin = io.BytesIO(
+        encode_request(_valid_request(session_id="s1", turn_id="ok-1", generation_epoch=1))
+        + encode_request(
+            _valid_request(
+                session_id="s2", turn_id="bad-dtype", generation_epoch=2, dtype="float32"
+            )
+        )
+        + encode_request(_valid_request(session_id="s3", turn_id="ok-2", generation_epoch=3))
+    )
+    stdout = io.BytesIO()
+
+    exit_code = serve(stdin, stdout)
+    assert exit_code == 0
+
+    responses = list(_read_responses(stdout.getvalue()))
+    assert len(responses) == 3
+    assert responses[0].ok is True
+    assert responses[1].ok is False
+    assert responses[1].error_code == "invalid_request"
+    assert responses[1].error_message == "dtype must be int16"
+    assert responses[2].ok is True
+    assert (responses[0].session_id, responses[0].turn_id, responses[0].generation_epoch) == (
+        "s1",
+        "ok-1",
+        1,
+    )
+    assert (responses[2].session_id, responses[2].turn_id, responses[2].generation_epoch) == (
+        "s3",
+        "ok-2",
+        3,
+    )
+
+
+def test_serve_returns_nonzero_on_truncated_header_bytes() -> None:
+    stdin = io.BytesIO(b"\x00\x00\x00")
+    stdout = io.BytesIO()
+
+    exit_code = serve(stdin, stdout)
+    assert exit_code == 1
+    assert stdout.getvalue() == b""

@@ -15,7 +15,6 @@ from .sidecar_protocol import (
     decode_message,
     decode_request,
     encode_response,
-    _infer_body_length_from_header,
 )
 
 
@@ -65,7 +64,7 @@ def _read_next_request_payload(stdin: BinaryIO) -> bytes | None:
     if prefix == b"":
         return None
     if len(prefix) < HEADER_PREFIX_SIZE:
-        raise SidecarProtocolError("stream ended before header length")
+        raise SidecarProtocolError("partial header prefix")
 
     header_len = struct.unpack(">I", prefix)[0]
     if header_len <= 0:
@@ -75,7 +74,13 @@ def _read_next_request_payload(stdin: BinaryIO) -> bytes | None:
         raise SidecarProtocolError("truncated header payload")
 
     header, _ = decode_message(prefix + header_bytes)
-    body_len = _infer_body_length_from_header(header)
+    num_samples = header.get("num_samples")
+    if not isinstance(num_samples, int) or isinstance(num_samples, bool):
+        raise SidecarProtocolError("num_samples must be a positive integer")
+    if num_samples <= 0:
+        raise SidecarProtocolError("num_samples must be a positive integer")
+
+    body_len = num_samples * 2
     body = bytearray()
     while len(body) < body_len:
         chunk = stdin.read(body_len - len(body))
