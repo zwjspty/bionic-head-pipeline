@@ -210,6 +210,74 @@ async def test_provider_maps_process_exit_to_provider_unavailable(
 
 
 @pytest.mark.asyncio
+async def test_provider_maps_missing_executable_to_provider_unavailable(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    adapter = _adapter(["/definitely/missing/emotalk-sidecar"])
+
+    with pytest.raises(PipelineException) as raised:
+        await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
+
+    assert raised.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert raised.value.provider == "emotalk_sidecar"
+    assert raised.value.stage == "audio2face"
+    assert str(turn_context.session_id) in raised.value.safe_message
+    assert str(turn_context.turn_id) in raised.value.safe_message
+    assert f"generation_epoch={turn_context.generation_epoch}" in raised.value.safe_message
+    assert "pid=None" in raised.value.safe_message
+
+
+@pytest.mark.asyncio
+async def test_provider_maps_failure_response_id_mismatch_to_output_validation_failed(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    adapter = _adapter(
+        _sidecar_script(
+            tmp_path / "mismatch_sidecar.py",
+            """
+import sys
+
+from bionic_head.sidecar_protocol import (
+    SidecarResponse,
+    decode_request,
+    encode_message,
+    encode_response,
+    read_message,
+)
+
+header, body = read_message(sys.stdin.buffer)
+request = decode_request(encode_message(header, body))
+response = SidecarResponse.failure(
+    "invalid_request",
+    "boom",
+    session_id="wrong",
+    turn_id="wrong",
+    generation_epoch=999,
+)
+sys.stdout.buffer.write(encode_response(response))
+sys.stdout.buffer.flush()
+""",
+        )
+    )
+
+    with pytest.raises(PipelineException) as raised:
+        await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
+
+    assert raised.value.code is ErrorCode.OUTPUT_VALIDATION_FAILED
+    assert raised.value.provider == "emotalk_sidecar"
+    assert str(turn_context.session_id) in raised.value.safe_message
+    assert str(turn_context.turn_id) in raised.value.safe_message
+    assert "generation_epoch mismatch" in raised.value.safe_message
+    assert "session_id mismatch" in raised.value.safe_message
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_provider_timeout_terminates_process(
     tmp_path: Path,
     turn_context,

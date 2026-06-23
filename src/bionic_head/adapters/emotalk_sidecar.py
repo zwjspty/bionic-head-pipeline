@@ -245,7 +245,7 @@ class EmoTalkSidecarAudio2FaceAdapter:
         return np.interp(target_positions, source_positions, samples)
 
     async def _transact(self, request: SidecarRequest):
-        process = await self._ensure_process()
+        process = await self._ensure_process(request)
         if process.stdin is None or process.stdout is None:
             raise self._process_unavailable("EmoTalk sidecar stdio is unavailable", process)
 
@@ -268,7 +268,7 @@ class EmoTalkSidecarAudio2FaceAdapter:
         self._validate_response(request, response, process)
         return response
 
-    async def _ensure_process(self) -> asyncio.subprocess.Process:
+    async def _ensure_process(self, request: SidecarRequest) -> asyncio.subprocess.Process:
         if self._process is not None and self._process.returncode is None:
             return self._process
 
@@ -279,12 +279,15 @@ class EmoTalkSidecarAudio2FaceAdapter:
             if not self.sidecar_command:
                 raise self._process_unavailable("EmoTalk sidecar command not configured", None)
 
-            process = await asyncio.create_subprocess_exec(
-                *self.sidecar_command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *self.sidecar_command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except (FileNotFoundError, OSError) as exc:
+                raise self._process_start_failed(request, "EmoTalk sidecar failed to start", exc) from exc
             self._process = process
             self.process_start_count += 1
             self._stderr_task = asyncio.create_task(self._drain_stderr(process))
@@ -361,6 +364,23 @@ class EmoTalkSidecarAudio2FaceAdapter:
 
     def _validate_response(self, request: SidecarRequest, response, process: asyncio.subprocess.Process) -> None:
         if not response.ok:
+            mismatches = []
+            if response.session_id is not None and response.session_id != request.session_id:
+                mismatches.append(
+                    f"session_id mismatch: request={request.session_id} response={response.session_id}"
+                )
+            if response.turn_id is not None and response.turn_id != request.turn_id:
+                mismatches.append(f"turn_id mismatch: request={request.turn_id} response={response.turn_id}")
+            if (
+                response.generation_epoch is not None
+                and response.generation_epoch != request.generation_epoch
+            ):
+                mismatches.append(
+                    f"generation_epoch mismatch: request={request.generation_epoch} response={response.generation_epoch}"
+                )
+            if mismatches:
+                raise self._output_invalid(", ".join(mismatches))
+
             raise PipelineException(
                 code=ErrorCode.PROVIDER_FAILED,
                 stage="audio2face",
@@ -455,6 +475,15 @@ class EmoTalkSidecarAudio2FaceAdapter:
         if stderr_tail:
             suffix = f"{suffix} stderr={stderr_tail[-256:]}"
         return SidecarProcessError(f"{message}{suffix}")
+
+    def _process_start_failed(
+        self,
+        request: SidecarRequest,
+        message: str,
+        exc: Exception,
+    ) -> SidecarProcessError:
+        detail = f"{message}: session_id={request.session_id}, turn_id={request.turn_id}, generation_epoch={request.generation_epoch}, pid=None, error={exc!s}"
+        return SidecarProcessError(detail)
 
     def _output_invalid(self, message: str) -> PipelineException:
         return PipelineException(
