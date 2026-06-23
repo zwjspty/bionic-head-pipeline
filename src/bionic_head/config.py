@@ -29,6 +29,14 @@ class StreamSettings(BaseModel):
     sentence_max_wait_ms: int = Field(default=500, ge=1)
 
 
+class VadSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    engine: Literal["rms"] = "rms"
+    interrupt_min_speech_ms: int = Field(default=80, ge=1)
+    interrupt_rms_threshold: float = Field(default=0.02, ge=0.0)
+
+
 class RetentionSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -163,6 +171,7 @@ class AppSettings(BaseModel):
 
     server: ServerSettings = Field(default_factory=ServerSettings)
     stream: StreamSettings = Field(default_factory=StreamSettings)
+    vad: VadSettings = Field(default_factory=VadSettings)
     retention: RetentionSettings = Field(default_factory=RetentionSettings)
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     adapters: AdaptersSettings = Field(default_factory=AdaptersSettings)

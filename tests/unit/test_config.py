@@ -12,6 +12,9 @@ def test_load_mock_settings() -> None:
     assert settings.adapters.audio2face.provider == "mock"
     assert settings.server.max_active_sessions == 1
     assert settings.providers.ollama.model == "qwen2.5:3b"
+    assert settings.vad.engine == "rms"
+    assert settings.vad.interrupt_min_speech_ms == 80
+    assert settings.vad.interrupt_rms_threshold == pytest.approx(0.02)
 
 
 def test_load_real_example_settings() -> None:
@@ -56,6 +59,9 @@ def test_load_real_example_settings() -> None:
         "/home/hailab/liuyiyu/head-project/Morpheus-Software"
     )
     assert settings.providers.morpheus.timeout_seconds == 300
+    assert settings.vad.engine == "rms"
+    assert settings.vad.interrupt_min_speech_ms == 80
+    assert settings.vad.interrupt_rms_threshold == pytest.approx(0.02)
 
 
 def test_load_emotalk_example_settings() -> None:
@@ -86,6 +92,9 @@ def test_load_emotalk_example_settings() -> None:
     assert settings.providers.emotalk.output_npy_glob == "*.npy"
     assert settings.providers.emotalk.timeout_seconds == 300
     assert settings.providers.piper.runtime == "python"
+    assert settings.vad.engine == "rms"
+    assert settings.vad.interrupt_min_speech_ms == 80
+    assert settings.vad.interrupt_rms_threshold == pytest.approx(0.02)
 
 
 def test_rejects_unsupported_sample_width() -> None:
@@ -96,6 +105,7 @@ def test_rejects_unsupported_sample_width() -> None:
                 "stream": {"input_sample_width_bytes": 4},
                 "retention": {},
                 "limits": {},
+                "vad": {},
                 "adapters": {
                     name: {"provider": "mock"}
                     for name in ("asr", "llm", "tts", "audio2face", "ue5")

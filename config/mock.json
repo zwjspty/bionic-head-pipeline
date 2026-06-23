@@ -10,6 +10,11 @@
     "sentence_max_chars": 80,
     "sentence_max_wait_ms": 500
   },
+  "vad": {
+    "engine": "rms",
+    "interrupt_min_speech_ms": 80,
+    "interrupt_rms_threshold": 0.02
+  },
   "retention": {"max_runs": 100},
   "limits": {"morpheus_max_concurrency": 1, "subprocess_terminate_grace_seconds": 2},
   "adapters": {
