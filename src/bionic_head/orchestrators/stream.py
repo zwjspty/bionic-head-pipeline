@@ -40,6 +40,13 @@ class _StreamArtifacts:
     ue5: UE5Payload | None = None
 
 
+@dataclass(frozen=True)
+class _FaceSegmentResult:
+    chunk_index: int
+    face: FaceArtifact
+    ue5: UE5Payload
+
+
 @dataclass
 class StreamOrchestrator:
     settings: AppSettings
@@ -58,7 +65,7 @@ class StreamOrchestrator:
         timeline = Timeline()
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
-        face_tasks: list[asyncio.Task[None]] = []
+        face_tasks: list[asyncio.Task[_FaceSegmentResult]] = []
         turn_dir = self.store.create_turn(turn.session_id, turn.turn_id)
         context = TurnContext(
             session_id=turn.session_id,
@@ -89,6 +96,7 @@ class StreamOrchestrator:
             face_tasks.append(
                 asyncio.create_task(
                     self._process_face_segment(
+                        chunk_index,
                         chunk_id,
                         audio,
                         llm,
@@ -97,7 +105,6 @@ class StreamOrchestrator:
                         factory,
                         timeline,
                         mark_once,
-                        artifacts,
                         emit_json,
                     )
                 )
@@ -197,7 +204,10 @@ class StreamOrchestrator:
                     intensity=fallback_llm.intensity,
                 )
             if face_tasks:
-                await asyncio.gather(*face_tasks)
+                face_results = await asyncio.gather(*face_tasks)
+                latest_face_result = max(face_results, key=lambda result: result.chunk_index)
+                artifacts.face = latest_face_result.face
+                artifacts.ue5 = latest_face_result.ue5
             self._ensure_complete(artifacts)
             snapshot = timeline.snapshot()
             result = PipelineResult(
@@ -306,6 +316,7 @@ class StreamOrchestrator:
 
     async def _process_face_segment(
         self,
+        chunk_index: int,
         chunk_id: str,
         audio: AudioArtifact,
         llm: LLMResult,
@@ -314,13 +325,11 @@ class StreamOrchestrator:
         factory: EventFactory,
         timeline: Timeline,
         mark_once: Callable[[str], None],
-        artifacts: _StreamArtifacts,
         emit_json: EmitJSON,
-    ) -> None:
+    ) -> _FaceSegmentResult:
         with timeline.stage("audio2face", self.registry.audio2face.name):
             self._ensure_current(turn)
             face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
-        artifacts.face = face
         mark_once("first_face_ready")
         await self._emit_json(
             turn,
@@ -340,7 +349,6 @@ class StreamOrchestrator:
         with timeline.stage("ue5", self.registry.ue5.name):
             self._ensure_current(turn)
             ue5 = await self.registry.ue5.format(face, context)
-        artifacts.ue5 = ue5
         for chunk in chunk_ue5_frames(ue5, chunk_size=30, chunk_id=chunk_id):
             await self._emit_json(
                 turn,
@@ -358,6 +366,7 @@ class StreamOrchestrator:
                 {"chunk_id": chunk_id},
             ),
         )
+        return _FaceSegmentResult(chunk_index=chunk_index, face=face, ue5=ue5)
 
     async def _emit_json(self, turn: TurnHandle, emit_json: EmitJSON, envelope: EventEnvelope) -> None:
         async def operation() -> None:
