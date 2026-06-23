@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 import os
 
@@ -30,7 +31,12 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     config_path = Path(os.environ.get("BIONIC_CONFIG", "config/mock.json"))
     resolved_settings = settings or load_settings(config_path)
 
-    app = FastAPI(title="Bionic Head Pipeline", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.startup_diagnostics = await app.state.container.prewarm()
+        yield
+
+    app = FastAPI(title="Bionic Head Pipeline", version="0.1.0", lifespan=lifespan)
     app.state.container = AppContainer.create(resolved_settings)
     app.add_exception_handler(PipelineException, pipeline_exception_handler)
     app.include_router(health.router)

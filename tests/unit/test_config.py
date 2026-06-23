@@ -27,6 +27,11 @@ def test_load_real_example_settings() -> None:
     assert settings.providers.faster_whisper.language == "zh"
     assert str(settings.providers.ollama.base_url) == "http://127.0.0.1:11434/"
     assert settings.providers.ollama.model == "qwen2.5:3b"
+    assert settings.providers.ollama.keep_alive == "30m"
+    assert settings.providers.ollama.num_ctx == 2048
+    assert settings.providers.ollama.num_predict == 96
+    assert settings.providers.ollama.temperature == pytest.approx(0.3)
+    assert settings.providers.ollama.prewarm is True
     assert settings.providers.piper.executable == ""
     assert settings.providers.piper.args == [
         "--model",
@@ -57,6 +62,11 @@ def test_load_emotalk_example_settings() -> None:
 
     assert settings.adapters.audio2face.provider == "emotalk"
     assert settings.adapters.ue5.provider == "morpheus-raw"
+    assert settings.providers.ollama.keep_alive == "30m"
+    assert settings.providers.ollama.num_ctx == 2048
+    assert settings.providers.ollama.num_predict == 96
+    assert settings.providers.ollama.temperature == pytest.approx(0.3)
+    assert settings.providers.ollama.prewarm is True
     assert settings.providers.emotalk.executable == "/home/user/miniconda3/bin/conda"
     assert settings.providers.emotalk.args == [
         "run",

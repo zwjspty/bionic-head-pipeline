@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from time import perf_counter
 from uuid import UUID
 import asyncio
 
@@ -12,6 +13,7 @@ from bionic_head.adapters.registry import AdapterRegistry, build_registry
 from bionic_head.config import AppSettings
 from bionic_head.core.artifacts import ArtifactStore
 from bionic_head.domain.errors import ErrorCode, PipelineException
+from bionic_head.domain.models import DiagnosticResult
 from bionic_head.orchestrators.offline import CommitCallback, OfflineOrchestrator
 from bionic_head.orchestrators.stream import StreamOrchestrator
 
@@ -105,6 +107,27 @@ class AppContainer:
             registry=self.registry,
             store=self.store,
         )
+
+    async def prewarm(self) -> list[DiagnosticResult]:
+        if (
+            self.settings.adapters.llm.provider != "ollama"
+            or not self.settings.providers.ollama.prewarm
+        ):
+            return []
+
+        started = perf_counter()
+        try:
+            return [await self.registry.llm.prewarm()]  # type: ignore[attr-defined]
+        except PipelineException as exc:
+            return [
+                DiagnosticResult(
+                    adapter="llm",
+                    provider=exc.provider or self.registry.llm.name,
+                    available=False,
+                    latency_ms=(perf_counter() - started) * 1000.0,
+                    message=exc.safe_message,
+                )
+            ]
 
 
 def get_container(request: Request) -> AppContainer:

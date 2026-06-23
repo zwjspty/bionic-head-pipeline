@@ -15,6 +15,10 @@ def _settings() -> OllamaSettings:
         base_url="http://ollama.test:11434",
         model="qwen2.5:3b",
         timeout_seconds=2,
+        keep_alive="30m",
+        num_ctx=2048,
+        num_predict=96,
+        temperature=0.3,
     )
 
 
@@ -60,8 +64,31 @@ async def test_streams_tokens_and_parses_final_emotion(turn_context) -> None:
     assert body["model"] == "qwen2.5:3b"
     assert body["stream"] is True
     assert body["format"] == "json"
+    assert body["keep_alive"] == "30m"
+    assert body["options"] == {
+        "num_ctx": 2048,
+        "num_predict": 96,
+        "temperature": 0.3,
+    }
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][-1] == {"role": "user", "content": "你好"}
+
+
+def test_payload_omits_disabled_keepalive_and_options() -> None:
+    settings = _settings().model_copy(
+        update={
+            "keep_alive": None,
+            "num_ctx": None,
+            "num_predict": None,
+            "temperature": None,
+        }
+    )
+    adapter = OllamaLLMAdapter(settings=settings)
+
+    body = adapter._build_payload("你好", [])
+
+    assert "keep_alive" not in body
+    assert "options" not in body
 
 
 @pytest.mark.asyncio
@@ -228,6 +255,55 @@ async def test_diagnostics_reports_missing_model_unavailable() -> None:
 
     assert result.available is False
     assert "qwen2.5:3b" in result.message
+
+
+@pytest.mark.asyncio
+async def test_prewarm_loads_model_with_keepalive_and_options() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"done": True})
+
+    adapter = OllamaLLMAdapter(
+        settings=_settings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.prewarm()
+
+    assert result.adapter == "llm"
+    assert result.provider == "ollama"
+    assert result.available is True
+    assert "prewarmed" in result.message
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/api/generate"
+    body = json.loads(requests[0].content)
+    assert body == {
+        "model": "qwen2.5:3b",
+        "prompt": "",
+        "stream": False,
+        "keep_alive": "30m",
+        "options": {
+            "num_ctx": 2048,
+            "num_predict": 96,
+            "temperature": 0.3,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_prewarm_failure_is_reported_as_unavailable() -> None:
+    adapter = OllamaLLMAdapter(
+        settings=_settings(),
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+    )
+
+    result = await adapter.prewarm()
+
+    assert result.available is False
+    assert "prewarm" in result.message.lower()
 
 
 def test_registry_builds_ollama_llm_with_other_mock_providers(mock_settings) -> None:

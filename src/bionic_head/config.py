@@ -105,6 +105,11 @@ class OllamaSettings(BaseModel):
     base_url: AnyHttpUrl = "http://127.0.0.1:11434"
     model: str = "qwen2.5:3b"
     timeout_seconds: float = Field(default=120.0, gt=0)
+    keep_alive: str | int | None = "30m"
+    num_ctx: int | None = Field(default=2048, ge=1)
+    num_predict: int | None = Field(default=96, ge=1)
+    temperature: float | None = Field(default=0.3, ge=0.0)
+    prewarm: bool = True
 
 
 class PiperSettings(CommandSettings):

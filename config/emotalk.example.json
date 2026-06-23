@@ -29,7 +29,12 @@
     "ollama": {
       "base_url": "http://127.0.0.1:11434",
       "model": "qwen2.5:3b",
-      "timeout_seconds": 180
+      "timeout_seconds": 180,
+      "keep_alive": "30m",
+      "num_ctx": 2048,
+      "num_predict": 96,
+      "temperature": 0.3,
+      "prewarm": true
     },
     "piper": {
       "executable": "/home/user/code/端到端/.venv/bin/piper",

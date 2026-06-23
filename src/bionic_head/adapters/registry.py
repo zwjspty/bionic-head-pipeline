@@ -183,6 +183,14 @@ class _LLMWrapper(_BaseWrapper):
     ) -> AsyncIterator[LLMEvent]:
         return self._stream_with_timeout(text, history, context)
 
+    async def prewarm(self) -> DiagnosticResult:
+        return await _call_with_timeout(
+            self._inner.prewarm,  # type: ignore[attr-defined]
+            stage="llm.prewarm",
+            provider=self.name,
+            timeout_seconds=self._settings.timeout_seconds,
+        )
+
 
 class _TTSWrapper(_BaseWrapper):
     async def synthesize(

@@ -249,12 +249,37 @@ class OllamaLLMAdapter:
             if role and content:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": text})
-        return {
+        payload: dict[str, object] = {
             "model": self.settings.model,
             "stream": True,
             "format": "json",
             "messages": messages,
         }
+        self._apply_runtime_options(payload)
+        return payload
+
+    def _build_prewarm_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "model": self.settings.model,
+            "prompt": "",
+            "stream": False,
+        }
+        self._apply_runtime_options(payload)
+        return payload
+
+    def _apply_runtime_options(self, payload: dict[str, object]) -> None:
+        if self.settings.keep_alive is not None:
+            payload["keep_alive"] = self.settings.keep_alive
+
+        options: dict[str, object] = {}
+        if self.settings.num_ctx is not None:
+            options["num_ctx"] = self.settings.num_ctx
+        if self.settings.num_predict is not None:
+            options["num_predict"] = self.settings.num_predict
+        if self.settings.temperature is not None:
+            options["temperature"] = self.settings.temperature
+        if options:
+            payload["options"] = options
 
     def _parse_stream_line(self, line: str) -> dict[str, object]:
         try:
@@ -335,6 +360,46 @@ class OllamaLLMAdapter:
             available=True,
             started=started,
             message=f"Ollama model ready: {self.settings.model}",
+        )
+
+    async def prewarm(self) -> DiagnosticResult:
+        started = perf_counter()
+        if httpx is None:
+            return self._diagnostic(
+                available=False,
+                started=started,
+                message="httpx is not installed; install the llm extra",
+            )
+
+        try:
+            async with self._client() as client:
+                response = await client.post(
+                    "/api/generate",
+                    json=self._build_prewarm_payload(),
+                )
+            if response.status_code >= 400:
+                return self._diagnostic(
+                    available=False,
+                    started=started,
+                    message="Ollama prewarm endpoint returned an error",
+                )
+        except httpx.TimeoutException:
+            return self._diagnostic(
+                available=False,
+                started=started,
+                message="Ollama prewarm timed out",
+            )
+        except httpx.RequestError:
+            return self._diagnostic(
+                available=False,
+                started=started,
+                message="Ollama API is unreachable during prewarm",
+            )
+
+        return self._diagnostic(
+            available=True,
+            started=started,
+            message=f"Ollama model prewarmed: {self.settings.model}",
         )
 
     def _model_names(self, payload: object) -> set[str]:
