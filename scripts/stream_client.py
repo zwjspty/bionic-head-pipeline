@@ -51,6 +51,8 @@ class ClientReceiver:
             "tts_chunks": 0,
             "ue5_chunks": 0,
             "terminal_event": None,
+            "terminal_event_ms": None,
+            "event_counts": {},
             "event_first_ms": {},
             "first_tts_binary_ms": None,
         }
@@ -59,14 +61,16 @@ class ClientReceiver:
 
     def accept_json(self, envelope: dict[str, object]) -> None:
         self._validate_envelope(envelope)
-        self._append_event(envelope)
+        received_ms = self._elapsed_ms()
+        self._append_event(envelope, received_ms=received_ms)
         event_type = str(envelope["type"])
         payload = envelope.get("payload")
         if not isinstance(payload, dict):
             raise ProtocolError("server event payload must be an object")
 
         self.summary["events"] = int(self.summary["events"]) + 1
-        self._record_first_event(event_type)
+        self._record_event_count(event_type)
+        self._record_first_event(event_type, received_ms)
         if event_type == "server.tts.audio":
             self._accept_tts_metadata(payload)
         elif event_type == "server.ue5.frames":
@@ -77,9 +81,9 @@ class ClientReceiver:
         elif event_type == "server.turn.cancelled":
             self.pending_segments.clear()
             self.pending_ue5_chunks.clear()
-            self._mark_terminal(event_type)
+            self._mark_terminal(event_type, received_ms)
         elif event_type in TERMINAL_TYPES:
-            self._mark_terminal(event_type)
+            self._mark_terminal(event_type, received_ms)
 
     def accept_binary(self, payload: bytes) -> None:
         pending = self.pending_tts
@@ -159,24 +163,31 @@ class ClientReceiver:
             return prefix
         return chunk_id
 
-    def _mark_terminal(self, event_type: str) -> None:
+    def _mark_terminal(self, event_type: str, received_ms: float) -> None:
         self.terminal_event = event_type
         self.summary["terminal_event"] = event_type
+        self.summary["terminal_event_ms"] = received_ms
         self.finish()
 
-    def _record_first_event(self, event_type: str) -> None:
+    def _record_event_count(self, event_type: str) -> None:
+        counts = self.summary["event_counts"]
+        if isinstance(counts, dict):
+            counts[event_type] = int(counts.get(event_type, 0)) + 1
+
+    def _record_first_event(self, event_type: str, received_ms: float) -> None:
         first_events = self.summary["event_first_ms"]
         if not isinstance(first_events, dict):
             return
         if event_type not in first_events:
-            first_events[event_type] = self._elapsed_ms()
+            first_events[event_type] = received_ms
 
     def _elapsed_ms(self) -> float:
         return round((self._clock() - self._started) * 1000.0, 3)
 
-    def _append_event(self, envelope: dict[str, object]) -> None:
+    def _append_event(self, envelope: dict[str, object], *, received_ms: float) -> None:
+        record = {**envelope, "_client_received_ms": received_ms}
         with (self.output_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(envelope, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def read_pcm16_from_wav(path: Path) -> bytes:

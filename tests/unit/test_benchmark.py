@@ -93,3 +93,17 @@ def test_stream_metrics_from_summary_falls_back_to_tts_metadata_time() -> None:
 
     assert metrics["tts_first_audio_ms"] == 300.0
     assert metrics["e2e_first_audible_ms"] == 300.0
+
+
+def test_stream_metrics_from_summary_uses_ue5_as_face_fallback() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "event_first_ms": {
+                "server.ue5.frames": 480.0,
+            },
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["face_first_chunk_ms"] == 480.0
+    assert metrics["e2e_first_visible_face_ms"] == 480.0

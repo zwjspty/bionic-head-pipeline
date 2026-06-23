@@ -78,11 +78,13 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
         metrics["tts_first_audio_ms"] = first_tts
         metrics["e2e_first_audible_ms"] = first_tts
 
+    first_ue5 = _float_or_none(event_first_ms.get("server.ue5.frames"))
     first_face = _float_or_none(event_first_ms.get("server.face.frames"))
+    if first_face is None:
+        first_face = first_ue5
     if first_face is not None:
         metrics["face_first_chunk_ms"] = first_face
 
-    first_ue5 = _float_or_none(event_first_ms.get("server.ue5.frames"))
     if first_ue5 is not None:
         metrics["e2e_first_visible_face_ms"] = first_ue5
 

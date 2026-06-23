@@ -27,6 +27,8 @@ def test_receiver_pairs_tts_metadata_with_next_binary(tmp_path) -> None:
     assert receiver.summary["tts_chunks"] == 1
     assert receiver.summary["event_first_ms"]["server.tts.audio"] == 125.0
     assert receiver.summary["first_tts_binary_ms"] == 250.0
+    event = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    assert '"_client_received_ms": 125.0' in event
 
 
 def test_binary_length_mismatch_is_rejected(tmp_path) -> None:
@@ -52,7 +54,8 @@ def test_sequence_gap_is_rejected(tmp_path) -> None:
 
 
 def test_cancel_clears_pending_playback(tmp_path) -> None:
-    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID)
+    now = iter([30.0, 30.111])
+    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
     receiver.pending_segments["0"] = object()
     receiver.pending_ue5_chunks["0"] = object()
 
@@ -67,10 +70,12 @@ def test_cancel_clears_pending_playback(tmp_path) -> None:
     assert receiver.pending_segments == {}
     assert receiver.pending_ue5_chunks == {}
     assert receiver.terminal_event == "server.turn.cancelled"
+    assert receiver.summary["event_counts"]["server.turn.cancelled"] == 1
+    assert receiver.summary["terminal_event_ms"] == 111.0
 
 
 def test_ue5_frames_are_saved_and_gap_is_rejected(tmp_path) -> None:
-    now = iter([20.0, 20.333])
+    now = iter([20.0, 20.333, 20.500])
     receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
     receiver.accept_json(
         server_event(
