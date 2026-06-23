@@ -26,8 +26,9 @@ class SentenceBuffer:
     def _drain_ready(self) -> list[str]:
         segments: list[str] = []
         while self._buffer:
-            if self._buffer[-1] in PUNCTUATION and len(self._buffer) >= self.min_chars:
-                split_at = len(self._buffer)
+            punctuation_index = self._first_eligible_punctuation_index()
+            if punctuation_index is not None:
+                split_at = punctuation_index + 1
             elif len(self._buffer) >= self.max_chars:
                 split_at = self.max_chars
             else:
@@ -40,8 +41,8 @@ class SentenceBuffer:
                 segments.append(segment)
         return segments
 
-    def _first_punctuation_index(self) -> int | None:
-        indexes = [self._buffer.find(mark) for mark in PUNCTUATION if mark in self._buffer]
-        if not indexes:
-            return None
-        return min(index for index in indexes if index >= 0)
+    def _first_eligible_punctuation_index(self) -> int | None:
+        for index, character in enumerate(self._buffer):
+            if character in PUNCTUATION and index + 1 >= self.min_chars:
+                return index
+        return None
