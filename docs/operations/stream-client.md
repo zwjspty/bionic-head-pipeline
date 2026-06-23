@@ -18,3 +18,5 @@ Input WAV must be mono PCM16 at 16 kHz. The client sends full `bionic-head-strea
 - `summary.json`
 
 The receiver validates server sequence ordering, `server.tts.audio` JSON/binary pairing, binary byte length, and UE5 frame chunk continuity. A terminal event is one of `server.pipeline.done`, `server.pipeline.error`, or `server.turn.cancelled`.
+
+Task 7 note: the server may emit later `server.tts.audio` chunks before earlier Audio2Face / UE5 chunks finish. Treat `chunk_id` as the stable join key; do not assume Face frames arrive immediately after each TTS chunk.

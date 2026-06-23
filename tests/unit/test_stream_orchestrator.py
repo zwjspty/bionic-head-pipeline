@@ -153,6 +153,35 @@ async def test_stream_cancel_after_tts_suppresses_background_face_and_latest(
 
 
 @pytest.mark.asyncio
+async def test_stream_stale_epoch_after_tts_suppresses_background_face_and_latest(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.latency_ms.face = 50
+    harness = stream_harness_factory(settings=settings, registry=build_registry(settings))
+    current_epoch = 0
+    harness.turn.generation_epoch = current_epoch
+    harness.turn.generation_epoch_getter = lambda: current_epoch
+    emit_binary_pair = harness.emit_binary_pair
+
+    async def emit_then_stale(envelope, binary: bytes) -> None:
+        nonlocal current_epoch
+        await emit_binary_pair(envelope, binary)
+        current_epoch += 1
+
+    harness.emit_binary_pair = emit_then_stale
+
+    await harness.run()
+
+    assert harness.terminal_types == ["server.turn.cancelled"]
+    assert "server.face.frames" not in harness.json_types
+    assert "server.ue5.frames" not in harness.json_types
+    assert not (harness.store.latest / "latest_pipeline.json").exists()
+    assert not (harness.store.latest / "latest_ue5_blendshape.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_stream_provider_failure_emits_one_error(
     mock_settings,
     stream_harness_factory,

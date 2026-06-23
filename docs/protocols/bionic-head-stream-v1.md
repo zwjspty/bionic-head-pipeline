@@ -60,6 +60,24 @@
 2. 下一帧一定是对应 WAV binary。
 3. JSON payload 包含 `chunk_id`、`format: wav`、`sample_rate`、`byte_length`、`duration_seconds`。
 
+## 分段事件顺序
+
+`/pipeline/stream` 采用短文本分段和 Face 后台追赶策略。服务端保证：
+
+```text
+每个 server.tts.audio JSON 后面紧跟对应 WAV binary。
+同一个 chunk_id 的 server.face.frames / server.ue5.frames / server.segment.ready 会在对应 TTS 之后出现。
+server.pipeline.done 只会在当前 turn 的所有 Face / UE5 分段处理完成后出现。
+```
+
+客户端不能假设每个分段都严格按：
+
+```text
+server.tts.audio -> server.face.frames -> server.ue5.frames -> server.segment.ready
+```
+
+连续成组出现。为了降低可听延迟，服务端可能先连续发送多个 `server.tts.audio`，再发送较早分段的 Face / UE5 事件。客户端必须使用 `chunk_id` 关联 TTS、Face、UE5 与 segment ready。
+
 ## 终态与取消
 
 每个 turn 只能出现一个终态：
