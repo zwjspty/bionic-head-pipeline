@@ -20,6 +20,28 @@ async def test_stream_emits_audio_before_face_then_segment_ready(stream_harness)
 
 
 @pytest.mark.asyncio
+async def test_stream_does_not_block_later_tts_on_slow_face(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.reply = "第一段内容已经足够。第二段内容也足够。"
+    settings.mock.latency_ms.face = 100
+    settings.stream.sentence_min_chars = 4
+    settings.stream.sentence_max_chars = 12
+    registry = build_registry(settings)
+    harness = stream_harness_factory(settings=settings, registry=registry)
+
+    await harness.run()
+
+    types = harness.json_types
+    tts_indexes = [index for index, event_type in enumerate(types) if event_type == "server.tts.audio"]
+    first_face_index = types.index("server.face.frames")
+    assert len(tts_indexes) >= 2
+    assert tts_indexes[1] < first_face_index
+
+
+@pytest.mark.asyncio
 async def test_stream_provider_failure_emits_one_error(
     mock_settings,
     stream_harness_factory,

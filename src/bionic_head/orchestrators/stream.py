@@ -58,6 +58,7 @@ class StreamOrchestrator:
         timeline = Timeline()
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
+        face_tasks: list[asyncio.Task[None]] = []
         turn_dir = self.store.create_turn(turn.session_id, turn.turn_id)
         context = TurnContext(
             session_id=turn.session_id,
@@ -70,6 +71,37 @@ class StreamOrchestrator:
             if name not in marks:
                 timeline.mark(name)
                 marks.add(name)
+
+        async def schedule_segment(segment: str, chunk_index: int, llm: LLMResult) -> None:
+            chunk_id, audio = await self._process_audio_segment(
+                segment,
+                chunk_index,
+                llm,
+                turn,
+                context,
+                factory,
+                timeline,
+                mark_once,
+                artifacts,
+                emit_json,
+                emit_binary_pair,
+            )
+            face_tasks.append(
+                asyncio.create_task(
+                    self._process_face_segment(
+                        chunk_id,
+                        audio,
+                        llm,
+                        turn,
+                        context,
+                        factory,
+                        timeline,
+                        mark_once,
+                        artifacts,
+                        emit_json,
+                    )
+                )
+            )
 
         try:
             copied = turn_dir / "input.wav"
@@ -128,19 +160,7 @@ class StreamOrchestrator:
                         segment = buffer.flush()
                         if segment is not None:
                             chunk_index += 1
-                            await self._process_segment(
-                                segment,
-                                chunk_index,
-                                fallback_llm,
-                                turn,
-                                context,
-                                factory,
-                                timeline,
-                                mark_once,
-                                artifacts,
-                                emit_json,
-                                emit_binary_pair,
-                            )
+                            await schedule_segment(segment, chunk_index, fallback_llm)
                         continue
                     except StopAsyncIteration:
                         break
@@ -160,19 +180,7 @@ class StreamOrchestrator:
                         )
                         for segment in buffer.push(event.text):
                             chunk_index += 1
-                            await self._process_segment(
-                                segment,
-                                chunk_index,
-                                fallback_llm,
-                                turn,
-                                context,
-                                factory,
-                                timeline,
-                                mark_once,
-                                artifacts,
-                                emit_json,
-                                emit_binary_pair,
-                            )
+                            await schedule_segment(segment, chunk_index, fallback_llm)
                     elif event.kind == "final" and event.result is not None:
                         artifacts.llm = event.result
                         fallback_llm = event.result
@@ -180,19 +188,7 @@ class StreamOrchestrator:
             residual = buffer.flush()
             if residual is not None:
                 chunk_index += 1
-                await self._process_segment(
-                    residual,
-                    chunk_index,
-                    fallback_llm,
-                    turn,
-                    context,
-                    factory,
-                    timeline,
-                    mark_once,
-                    artifacts,
-                    emit_json,
-                    emit_binary_pair,
-                )
+                await schedule_segment(residual, chunk_index, fallback_llm)
 
             if artifacts.llm is None:
                 artifacts.llm = LLMResult(
@@ -200,6 +196,8 @@ class StreamOrchestrator:
                     emotion=fallback_llm.emotion,
                     intensity=fallback_llm.intensity,
                 )
+            if face_tasks:
+                await asyncio.gather(*face_tasks)
             self._ensure_complete(artifacts)
             snapshot = timeline.snapshot()
             result = PipelineResult(
@@ -255,9 +253,14 @@ class StreamOrchestrator:
                     )
                 )
         finally:
+            pending_face_tasks = [task for task in face_tasks if not task.done()]
+            for task in pending_face_tasks:
+                task.cancel()
+            if face_tasks:
+                await asyncio.gather(*face_tasks, return_exceptions=True)
             self.store.write_json(turn_dir / "timeline.json", timeline.snapshot())
 
-    async def _process_segment(
+    async def _process_audio_segment(
         self,
         segment: str,
         chunk_index: int,
@@ -270,7 +273,7 @@ class StreamOrchestrator:
         artifacts: _StreamArtifacts,
         emit_json: EmitJSON,
         emit_binary_pair: EmitBinaryPair,
-    ) -> None:
+    ) -> tuple[str, AudioArtifact]:
         chunk_id = f"chunk-{chunk_index:04d}"
         await self._emit_json(
             turn,
@@ -299,7 +302,21 @@ class StreamOrchestrator:
             },
         )
         await self._emit_binary_pair(turn, emit_binary_pair, metadata, audio.path.read_bytes())
+        return chunk_id, audio
 
+    async def _process_face_segment(
+        self,
+        chunk_id: str,
+        audio: AudioArtifact,
+        llm: LLMResult,
+        turn: TurnHandle,
+        context: TurnContext,
+        factory: EventFactory,
+        timeline: Timeline,
+        mark_once: Callable[[str], None],
+        artifacts: _StreamArtifacts,
+        emit_json: EmitJSON,
+    ) -> None:
         with timeline.stage("audio2face", self.registry.audio2face.name):
             self._ensure_current(turn)
             face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
