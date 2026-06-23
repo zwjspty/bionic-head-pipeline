@@ -82,6 +82,37 @@ Then run the protocol client:
   --output-dir client-output
 ```
 
+## Grey-head preview before UE5
+
+Before the real UE5 character is connected, use the EmoTalk Blender grey-head
+renderer for visual acceptance. Do not use the simplified bar-chart preview for
+product demos.
+
+The renderer consumes the same real pipeline artifacts:
+
+- Piper reply WAV;
+- EmoTalk/Morpheus-style `[N, 52]` blendshape `.npy`;
+- `/home/user/code/EmoTalk_release/render.blend`;
+- `/home/user/code/EmoTalk_release/render.py`;
+- `/home/user/code/EmoTalk_release/blender/blender`.
+
+Render one pipeline result:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/render_emotalk_grey_head.py \
+  --face-npy /tmp/my-bionic-face.npy \
+  --audio-wav /tmp/my-bionic-reply.wav \
+  --output /tmp/my-bionic-grey-head.mp4 \
+  --name my-bionic \
+  --work-dir /tmp/my-bionic-grey-render
+```
+
+Play it:
+
+```bash
+ffplay /tmp/my-bionic-grey-head.mp4
+```
+
 ## Benchmark
 
 Use at least 10 turns for acceptance evidence:
