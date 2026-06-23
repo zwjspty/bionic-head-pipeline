@@ -259,14 +259,19 @@ class EmoTalkSidecarAudio2FaceAdapter:
                 process,
             ) from exc
 
-        response_payload = await self._read_response_payload(process)
         try:
-            response = decode_response(response_payload)
-        except SidecarProtocolError as exc:
-            raise self._output_invalid(f"Invalid EmoTalk sidecar response: {exc}") from exc
+            response_payload = await self._read_response_payload(process)
+            try:
+                response = decode_response(response_payload)
+            except SidecarProtocolError as exc:
+                raise self._output_invalid(f"Invalid EmoTalk sidecar response: {exc}") from exc
 
-        self._validate_response(request, response, process)
-        return response
+            self._validate_response(request, response, process)
+            return response
+        except PipelineException as exc:
+            if exc.code is ErrorCode.OUTPUT_VALIDATION_FAILED:
+                await self.close()
+            raise
 
     async def _ensure_process(self, request: SidecarRequest) -> asyncio.subprocess.Process:
         if self._process is not None and self._process.returncode is None:

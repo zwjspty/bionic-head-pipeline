@@ -240,6 +240,7 @@ async def test_provider_maps_failure_response_id_mismatch_to_output_validation_f
             tmp_path / "mismatch_sidecar.py",
             """
 import sys
+import time
 
 from bionic_head.sidecar_protocol import (
     SidecarResponse,
@@ -260,6 +261,7 @@ response = SidecarResponse.failure(
 )
 sys.stdout.buffer.write(encode_response(response))
 sys.stdout.buffer.flush()
+time.sleep(3600)
 """,
         )
     )
@@ -273,6 +275,12 @@ sys.stdout.buffer.flush()
     assert str(turn_context.turn_id) in raised.value.safe_message
     assert "generation_epoch mismatch" in raised.value.safe_message
     assert "session_id mismatch" in raised.value.safe_message
+    assert adapter.process is None or adapter.process.returncode is not None
+
+    adapter.sidecar_command = [sys.executable, "-m", "bionic_head.emotalk_fake_sidecar"]
+    face = await adapter.drive(audio, Emotion.HAPPY, 0.8, turn_context)
+    assert face.frame_count == 30
+    assert adapter.process_start_count == 2
 
     await adapter.close()
 
@@ -314,10 +322,12 @@ async def test_provider_rejects_truncated_stdout(
             """
 import struct
 import sys
+import time
 
 sys.stdout.buffer.write(struct.pack(">I", 32))
 sys.stdout.buffer.write(b"{\\"protocol\\": \\"emotalk-sidecar-v1\\", \\"ok\\": true")
 sys.stdout.buffer.flush()
+time.sleep(3600)
 """,
         )
     )
@@ -326,6 +336,13 @@ sys.stdout.buffer.flush()
         await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
 
     assert raised.value.code is ErrorCode.OUTPUT_VALIDATION_FAILED
+
+    assert adapter.process is None or adapter.process.returncode is not None
+
+    adapter.sidecar_command = [sys.executable, "-m", "bionic_head.emotalk_fake_sidecar"]
+    face = await adapter.drive(audio, Emotion.HAPPY, 0.8, turn_context)
+    assert face.frame_count == 30
+    assert adapter.process_start_count == 2
 
     await adapter.close()
 
