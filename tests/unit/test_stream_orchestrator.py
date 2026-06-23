@@ -47,6 +47,43 @@ class _OutOfOrderAudio2FaceAdapter:
         await asyncio.sleep(0)
 
 
+class _StalingAudio2FaceAdapter:
+    name = "staling-face"
+
+    def __init__(self, stale_turn) -> None:
+        self._stale_turn = stale_turn
+        self.call_count = 0
+
+    async def drive(
+        self,
+        audio: AudioArtifact,
+        emotion: Emotion,
+        intensity: float,
+        context: TurnContext,
+    ) -> FaceArtifact:
+        self.call_count += 1
+        self._stale_turn()
+        await asyncio.sleep(0.01)
+        return FaceArtifact(
+            frames=[[1.0] * 52],
+            fps=30,
+            channel_count=52,
+            frame_count=1,
+        )
+
+    async def diagnostics(self) -> DiagnosticResult:
+        return DiagnosticResult(
+            adapter="audio2face",
+            provider=self.name,
+            available=True,
+            latency_ms=0.0,
+            message="test adapter ready",
+        )
+
+    async def cancel(self, turn_id) -> None:
+        await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 async def test_stream_emits_audio_before_face_then_segment_ready(stream_harness) -> None:
     await stream_harness.run()
@@ -153,7 +190,7 @@ async def test_stream_cancel_after_tts_suppresses_background_face_and_latest(
 
 
 @pytest.mark.asyncio
-async def test_stream_stale_epoch_after_tts_suppresses_background_face_and_latest(
+async def test_stream_stale_epoch_before_face_task_creation_suppresses_background_face_and_latest(
     mock_settings,
     stream_harness_factory,
 ) -> None:
@@ -177,6 +214,41 @@ async def test_stream_stale_epoch_after_tts_suppresses_background_face_and_lates
     assert harness.terminal_types == ["server.turn.cancelled"]
     assert "server.face.frames" not in harness.json_types
     assert "server.ue5.frames" not in harness.json_types
+    assert "server.segment.ready" not in harness.json_types
+    assert not (harness.store.latest / "latest_pipeline.json").exists()
+    assert not (harness.store.latest / "latest_ue5_blendshape.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_stream_stale_epoch_while_background_face_running_suppresses_face_and_latest(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    current_epoch = 0
+
+    def stale_turn() -> None:
+        nonlocal current_epoch
+        current_epoch += 1
+
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=registry.llm,
+        tts=registry.tts,
+        audio2face=_StalingAudio2FaceAdapter(stale_turn),
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry)
+    harness.turn.generation_epoch = current_epoch
+    harness.turn.generation_epoch_getter = lambda: current_epoch
+
+    await harness.run()
+
+    assert harness.terminal_types == ["server.turn.cancelled"]
+    assert "server.face.frames" not in harness.json_types
+    assert "server.ue5.frames" not in harness.json_types
+    assert "server.segment.ready" not in harness.json_types
     assert not (harness.store.latest / "latest_pipeline.json").exists()
     assert not (harness.store.latest / "latest_ue5_blendshape.json").exists()
 
