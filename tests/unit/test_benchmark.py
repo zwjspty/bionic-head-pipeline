@@ -107,3 +107,16 @@ def test_stream_metrics_from_summary_uses_ue5_as_face_fallback() -> None:
 
     assert metrics["face_first_chunk_ms"] == 480.0
     assert metrics["e2e_first_visible_face_ms"] == 480.0
+
+
+def test_stream_metrics_from_summary_extracts_playback_stop_latency() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "event_first_ms": {
+                "server.playback.stop": 88.0,
+            },
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["interrupt_to_playback_stop_ms"] == 88.0

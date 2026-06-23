@@ -55,6 +55,9 @@ class ClientReceiver:
             "event_counts": {},
             "event_first_ms": {},
             "first_tts_binary_ms": None,
+            "latest_generation_epoch": None,
+            "playback_stop_count": 0,
+            "stale_drop_count": 0,
         }
         (self.output_dir / "tts").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "ue5").mkdir(parents=True, exist_ok=True)
@@ -71,6 +74,11 @@ class ClientReceiver:
         self.summary["events"] = int(self.summary["events"]) + 1
         self._record_event_count(event_type)
         self._record_first_event(event_type, received_ms)
+        event_epoch = self._event_generation_epoch(envelope, payload)
+        if self._is_stale_generation(event_epoch):
+            self.summary["stale_drop_count"] = int(self.summary["stale_drop_count"]) + 1
+            return
+        self._record_generation_epoch(event_epoch)
         if event_type == "server.tts.audio":
             self._accept_tts_metadata(payload)
         elif event_type == "server.ue5.frames":
@@ -78,9 +86,11 @@ class ClientReceiver:
         elif event_type == "server.segment.ready":
             chunk_id = str(payload.get("chunk_id", f"segment-{len(self.pending_segments)}"))
             self.pending_segments[chunk_id] = payload
+        elif event_type == "server.playback.stop":
+            self._clear_pending_playback()
+            self.summary["playback_stop_count"] = int(self.summary["playback_stop_count"]) + 1
         elif event_type == "server.turn.cancelled":
-            self.pending_segments.clear()
-            self.pending_ue5_chunks.clear()
+            self._clear_pending_playback()
             self._mark_terminal(event_type, received_ms)
         elif event_type in TERMINAL_TYPES:
             self._mark_terminal(event_type, received_ms)
@@ -180,6 +190,37 @@ class ClientReceiver:
             return
         if event_type not in first_events:
             first_events[event_type] = received_ms
+
+    def _event_generation_epoch(
+        self,
+        envelope: dict[str, object],
+        payload: dict[str, object],
+    ) -> int | None:
+        value = envelope.get("generation_epoch")
+        if not isinstance(value, int):
+            value = payload.get("generation_epoch")
+        return value if isinstance(value, int) else None
+
+    def _is_stale_generation(self, event_epoch: int | None) -> bool:
+        latest = self.summary["latest_generation_epoch"]
+        return (
+            isinstance(event_epoch, int)
+            and isinstance(latest, int)
+            and event_epoch < latest
+        )
+
+    def _record_generation_epoch(self, event_epoch: int | None) -> None:
+        if event_epoch is None:
+            return
+        latest = self.summary["latest_generation_epoch"]
+        if not isinstance(latest, int) or event_epoch > latest:
+            self.summary["latest_generation_epoch"] = event_epoch
+
+    def _clear_pending_playback(self) -> None:
+        self.pending_tts = None
+        self.pending_segments.clear()
+        self.pending_ue5_chunks.clear()
+        self.next_ue5_frame_index_by_segment.clear()
 
     def _elapsed_ms(self) -> float:
         return round((self._clock() - self._started) * 1000.0, 3)

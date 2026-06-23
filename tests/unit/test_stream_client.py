@@ -74,6 +74,56 @@ def test_cancel_clears_pending_playback(tmp_path) -> None:
     assert receiver.summary["terminal_event_ms"] == 111.0
 
 
+def test_playback_stop_clears_pending_buffers_and_tracks_epoch(tmp_path) -> None:
+    now = iter([40.0, 40.100])
+    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
+    receiver.pending_tts = object()
+    receiver.pending_segments["0"] = object()
+    receiver.pending_ue5_chunks["0"] = object()
+
+    receiver.accept_json(
+        server_event(
+            event_type="server.playback.stop",
+            sequence=1,
+            generation_epoch=3,
+            payload={},
+        )
+    )
+
+    assert receiver.pending_tts is None
+    assert receiver.pending_segments == {}
+    assert receiver.pending_ue5_chunks == {}
+    assert receiver.terminal_event is None
+    assert receiver.summary["playback_stop_count"] == 1
+    assert receiver.summary["latest_generation_epoch"] == 3
+    assert receiver.summary["event_first_ms"]["server.playback.stop"] == 100.0
+
+
+def test_stale_lower_epoch_event_is_counted_but_not_applied(tmp_path) -> None:
+    now = iter([50.0, 50.100, 50.200])
+    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
+    receiver.accept_json(
+        server_event(
+            event_type="server.playback.stop",
+            sequence=1,
+            generation_epoch=2,
+            payload={},
+        )
+    )
+
+    receiver.accept_json(
+        server_event(
+            event_type="server.tts.audio",
+            sequence=2,
+            generation_epoch=1,
+            payload={"chunk_id": "old", "byte_length": 4, "format": "wav"},
+        )
+    )
+
+    assert receiver.pending_tts is None
+    assert receiver.summary["stale_drop_count"] == 1
+
+
 def test_ue5_frames_are_saved_and_gap_is_rejected(tmp_path) -> None:
     now = iter([20.0, 20.333, 20.500])
     receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
@@ -108,7 +158,12 @@ def test_ue5_frames_are_saved_and_gap_is_rejected(tmp_path) -> None:
         )
 
 
-def server_event(event_type: str, sequence: int, payload: dict[str, object]) -> dict[str, object]:
+def server_event(
+    event_type: str,
+    sequence: int,
+    payload: dict[str, object],
+    generation_epoch: int = 0,
+) -> dict[str, object]:
     return {
         "protocol": "bionic-head-stream-v1",
         "type": event_type,
@@ -116,10 +171,12 @@ def server_event(event_type: str, sequence: int, payload: dict[str, object]) -> 
         "session_id": str(SESSION_ID),
         "turn_id": str(TURN_ID),
         "sequence": sequence,
+        "generation_epoch": generation_epoch,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "payload": {
             "session_id": str(SESSION_ID),
             "turn_id": str(TURN_ID),
+            "generation_epoch": generation_epoch,
             **payload,
         },
     }

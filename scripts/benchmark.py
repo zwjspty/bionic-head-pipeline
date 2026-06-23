@@ -88,6 +88,10 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
     if first_ue5 is not None:
         metrics["e2e_first_visible_face_ms"] = first_ue5
 
+    playback_stop = _float_or_none(event_first_ms.get("server.playback.stop"))
+    if playback_stop is not None:
+        metrics["interrupt_to_playback_stop_ms"] = playback_stop
+
     return metrics
 
 
