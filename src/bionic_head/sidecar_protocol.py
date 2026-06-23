@@ -298,6 +298,28 @@ def decode_response(payload: bytes) -> SidecarResponse:
     )
 
 
+def _infer_body_length_from_header(header: dict[str, object]) -> int:
+    if "ok" in header:
+        ok = _require_type(header, "ok", bool)
+        if ok:
+            frame_count = _validate_positive_int(header.get("frame_count"), "frame_count")
+            channel_count = _validate_positive_int(header.get("channel_count"), "channel_count")
+            dtype = _validate_str(header.get("dtype"), "dtype")
+            if dtype != "float32":
+                raise SidecarProtocolError("success response dtype must be float32")
+            return frame_count * channel_count * 4
+        return 0
+
+    if "num_samples" in header:
+        num_samples = _validate_positive_int(header.get("num_samples"), "num_samples")
+        dtype = _validate_str(header.get("dtype"), "dtype")
+        if dtype != "int16":
+            raise SidecarProtocolError("request dtype must be int16")
+        return num_samples * 2
+
+    raise SidecarProtocolError("unable to infer message body length from header")
+
+
 def encode_request(request: SidecarRequest) -> bytes:
     return encode_message(request.to_header(), request.audio)
 
@@ -318,7 +340,12 @@ def read_message(stream: BinaryIO) -> tuple[dict[str, object], bytes]:
     header_bytes = stream.read(header_len)
     if len(header_bytes) < header_len:
         raise SidecarProtocolError("truncated header payload")
-    return decode_message(raw_prefix + header_bytes + stream.read())
+    header, _ = decode_message(raw_prefix + header_bytes)
+    body_len = _infer_body_length_from_header(header)
+    body = stream.read(body_len)
+    if len(body) < body_len:
+        raise SidecarProtocolError("truncated message body")
+    return header, body
 
 
 def write_message(stream: BinaryIO, header: dict[str, object], body: bytes) -> None:

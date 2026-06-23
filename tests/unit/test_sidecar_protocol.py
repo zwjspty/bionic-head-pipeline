@@ -86,8 +86,10 @@ def test_message_prefix_is_big_endian_header_length() -> None:
 def test_stream_helpers_round_trip() -> None:
     import io
 
-    header = {"protocol": PROTOCOL_VERSION, "key": "value"}
-    body = b"payload-bytes"
+    request = _request(num_samples=5)
+    header = request.to_header()
+    header["protocol"] = PROTOCOL_VERSION
+    body = request.audio
     stream = io.BytesIO()
 
     write_message(stream, header, body)
@@ -96,6 +98,33 @@ def test_stream_helpers_round_trip() -> None:
     decoded_header, decoded_body = read_message(stream)
     assert decoded_header == header
     assert decoded_body == body
+
+
+def test_read_message_reads_two_back_to_back_messages() -> None:
+    import io
+
+    request = _request(session_id="session-a", turn_id="turn-a", num_samples=4)
+    response_frames = np.arange(52, dtype=np.float32).tobytes()
+    response = SidecarResponse.success(
+        session_id="session-b",
+        turn_id="turn-b",
+        generation_epoch=9,
+        frame_count=1,
+        frames=response_frames,
+        fps=30,
+        channel_count=52,
+    )
+
+    stream = io.BytesIO(encode_request(request) + encode_response(response))
+    stream.seek(0)
+
+    first_header, first_body = read_message(stream)
+    second_header, second_body = read_message(stream)
+
+    assert first_header == request.to_header()
+    assert first_body == request.audio
+    assert second_header == response.to_header()
+    assert second_body == response_frames
 
 
 def test_request_round_trip_preserves_session_turn_epoch_and_pcm() -> None:
