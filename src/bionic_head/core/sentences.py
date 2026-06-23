@@ -5,10 +5,13 @@ PUNCTUATION = "。！？!?；;\n"
 
 
 class SentenceBuffer:
-    def __init__(self, *, max_chars: int) -> None:
+    def __init__(self, *, max_chars: int, min_chars: int = 1) -> None:
         if max_chars < 1:
             raise ValueError("max_chars must be at least 1")
+        if min_chars < 1:
+            raise ValueError("min_chars must be at least 1")
         self.max_chars = max_chars
+        self.min_chars = min_chars
         self._buffer = ""
 
     def push(self, token: str) -> list[str]:
@@ -23,9 +26,8 @@ class SentenceBuffer:
     def _drain_ready(self) -> list[str]:
         segments: list[str] = []
         while self._buffer:
-            punctuation_index = self._first_punctuation_index()
-            if punctuation_index is not None:
-                split_at = punctuation_index + 1
+            if self._buffer[-1] in PUNCTUATION and len(self._buffer) >= self.min_chars - 1:
+                split_at = len(self._buffer)
             elif len(self._buffer) >= self.max_chars:
                 split_at = self.max_chars
             else:

@@ -25,7 +25,8 @@ class StreamSettings(BaseModel):
     input_sample_rate: Literal[16000] = 16000
     input_channels: Literal[1] = 1
     input_sample_width_bytes: Literal[2] = 2
-    sentence_max_chars: int = Field(default=80, ge=1)
+    sentence_min_chars: int = Field(default=8, ge=1)
+    sentence_max_chars: int = Field(default=24, ge=1)
     sentence_max_wait_ms: int = Field(default=500, ge=1)
 
 

@@ -104,7 +104,10 @@ class StreamOrchestrator:
                 ),
             )
 
-            buffer = SentenceBuffer(max_chars=self.settings.stream.sentence_max_chars)
+            buffer = SentenceBuffer(
+                max_chars=self.settings.stream.sentence_max_chars,
+                min_chars=self.settings.stream.sentence_min_chars,
+            )
             reply_parts: list[str] = []
             chunk_index = 0
             fallback_llm = LLMResult(
