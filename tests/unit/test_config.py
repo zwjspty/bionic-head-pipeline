@@ -33,6 +33,7 @@ def test_load_real_example_settings() -> None:
     assert settings.providers.ollama.temperature == pytest.approx(0.3)
     assert settings.providers.ollama.prewarm is True
     assert settings.providers.piper.executable == ""
+    assert settings.providers.piper.runtime == "python"
     assert settings.providers.piper.args == [
         "--model",
         "{model_path}",
@@ -84,6 +85,7 @@ def test_load_emotalk_example_settings() -> None:
     assert settings.providers.emotalk.cwd == Path("/home/user/code/EmoTalk_release")
     assert settings.providers.emotalk.output_npy_glob == "*.npy"
     assert settings.providers.emotalk.timeout_seconds == 300
+    assert settings.providers.piper.runtime == "python"
 
 
 def test_rejects_unsupported_sample_width() -> None:

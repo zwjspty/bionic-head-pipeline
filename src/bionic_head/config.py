@@ -113,11 +113,20 @@ class OllamaSettings(BaseModel):
 
 
 class PiperSettings(CommandSettings):
+    runtime: Literal["cli", "python"] = "cli"
     model_path: Path | None = None
+    config_path: Path | None = None
+    use_cuda: bool = False
+    speaker_id: int | None = None
+    length_scale: float | None = Field(default=None, gt=0)
+    noise_scale: float | None = Field(default=None, ge=0)
+    noise_w_scale: float | None = Field(default=None, ge=0)
+    normalize_audio: bool = True
+    volume: float = Field(default=1.0, gt=0)
 
-    @field_validator("model_path", mode="before")
+    @field_validator("model_path", "config_path", mode="before")
     @classmethod
-    def _empty_model_path_is_unknown(cls, value: object) -> object:
+    def _empty_path_is_unknown(cls, value: object) -> object:
         if value == "":
             return None
         return value

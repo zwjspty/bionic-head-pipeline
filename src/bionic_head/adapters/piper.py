@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import shutil
 import string
+import sys
 import wave
 from pathlib import Path
 from time import perf_counter
@@ -93,6 +95,12 @@ def _executable_available(executable: str) -> bool:
     return shutil.which(executable) is not None
 
 
+def _piper_python_api_available() -> bool:
+    if "piper" in sys.modules:
+        return True
+    return importlib.util.find_spec("piper") is not None
+
+
 def _audio_artifact_from_piper_wav(path: Path) -> AudioArtifact:
     if not path.exists():
         raise _output_invalid("Piper did not write an output WAV")
@@ -140,6 +148,15 @@ class PiperTTSAdapter:
         timeout_seconds: float,
         grace_seconds: float,
         cwd: str | Path | None = None,
+        runtime: str = "cli",
+        config_path: str | Path | None = None,
+        use_cuda: bool = False,
+        speaker_id: int | None = None,
+        length_scale: float | None = None,
+        noise_scale: float | None = None,
+        noise_w_scale: float | None = None,
+        normalize_audio: bool = True,
+        volume: float = 1.0,
     ) -> None:
         self.executable = executable
         self.args = args
@@ -147,9 +164,22 @@ class PiperTTSAdapter:
         self.timeout_seconds = timeout_seconds
         self.grace_seconds = grace_seconds
         self.cwd = Path(cwd) if cwd is not None else None
+        self.runtime = runtime
+        self.config_path = Path(config_path) if config_path is not None else None
+        self.use_cuda = use_cuda
+        self.speaker_id = speaker_id
+        self.length_scale = length_scale
+        self.noise_scale = noise_scale
+        self.noise_w_scale = noise_w_scale
+        self.normalize_audio = normalize_audio
+        self.volume = volume
         self.call_count = 0
-        self._fields = _template_fields(args)
-        if "output_path" not in self._fields:
+        self._voice: object | None = None
+        self._synthesis_lock = asyncio.Lock()
+        if self.runtime not in {"cli", "python"}:
+            raise _invalid_request(f"Unsupported Piper runtime: {runtime}")
+        self._fields = _template_fields(args) if self.runtime == "cli" else set()
+        if self.runtime == "cli" and "output_path" not in self._fields:
             raise _invalid_request("Piper command template must include {output_path}")
 
     @classmethod
@@ -166,6 +196,15 @@ class PiperTTSAdapter:
             cwd=settings.cwd,
             timeout_seconds=settings.timeout_seconds,
             grace_seconds=grace_seconds,
+            runtime=settings.runtime,
+            config_path=settings.config_path,
+            use_cuda=settings.use_cuda,
+            speaker_id=settings.speaker_id,
+            length_scale=settings.length_scale,
+            noise_scale=settings.noise_scale,
+            noise_w_scale=settings.noise_w_scale,
+            normalize_audio=settings.normalize_audio,
+            volume=settings.volume,
         )
 
     async def synthesize(
@@ -179,6 +218,12 @@ class PiperTTSAdapter:
         self.call_count += 1
         output_path = context.artifact_dir / "tts" / f"piper_{self.call_count:04d}.wav"
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if self.runtime == "python":
+            await self._synthesize_with_python_runtime(text, output_path)
+            context.cancellation.raise_if_cancelled()
+            return _audio_artifact_from_piper_wav(output_path)
+
         command_args = [self.executable, *self._render_args(text, output_path)]
         stdin = None if "text" in self._fields else text.encode("utf-8")
 
@@ -199,6 +244,85 @@ class PiperTTSAdapter:
         context.cancellation.raise_if_cancelled()
         return _audio_artifact_from_piper_wav(output_path)
 
+    async def _synthesize_with_python_runtime(self, text: str, output_path: Path) -> None:
+        try:
+            async with self._synthesis_lock:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._synthesize_python_sync, text, output_path),
+                    timeout=self.timeout_seconds,
+                )
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError as exc:
+            raise _tts_error(
+                code=ErrorCode.PROVIDER_TIMEOUT,
+                message="Piper synthesis timed out",
+                retryable=True,
+            ) from exc
+        except ImportError as exc:
+            raise _tts_error(
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                message="Piper Python API is unavailable",
+                retryable=False,
+            ) from exc
+        except PipelineException:
+            raise
+        except Exception as exc:
+            raise _tts_error(
+                code=ErrorCode.PROVIDER_FAILED,
+                message="Piper synthesis failed",
+                retryable=True,
+            ) from exc
+
+    def _synthesize_python_sync(self, text: str, output_path: Path) -> None:
+        from piper import SynthesisConfig
+
+        voice = self._get_python_voice_sync()
+        with wave.open(str(output_path), "wb") as wav:
+            voice.synthesize_wav(
+                text,
+                wav,
+                syn_config=SynthesisConfig(
+                    speaker_id=self.speaker_id,
+                    length_scale=self.length_scale,
+                    noise_scale=self.noise_scale,
+                    noise_w_scale=self.noise_w_scale,
+                    normalize_audio=self.normalize_audio,
+                    volume=self.volume,
+                ),
+            )
+
+    def _get_python_voice_sync(self) -> object:
+        if self._voice is not None:
+            return self._voice
+        if self.model_path is None:
+            raise _tts_error(
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                message="Piper model path is not configured",
+                retryable=False,
+            )
+        if not self.model_path.exists():
+            raise _tts_error(
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                message="Piper model file is missing",
+                retryable=False,
+            )
+        if self.config_path is not None and not self.config_path.exists():
+            raise _tts_error(
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                message="Piper config file is missing",
+                retryable=False,
+            )
+
+        from piper import PiperVoice
+
+        self._voice = PiperVoice.load(
+            self.model_path,
+            config_path=self.config_path,
+            use_cuda=self.use_cuda,
+        )
+        return self._voice
+
     def _render_args(self, text: str, output_path: Path) -> list[str]:
         values = {
             "model_path": str(self.model_path) if self.model_path is not None else "",
@@ -209,6 +333,37 @@ class PiperTTSAdapter:
 
     async def diagnostics(self) -> DiagnosticResult:
         started = perf_counter()
+        if self.runtime == "python":
+            if not _piper_python_api_available():
+                return self._diagnostic(
+                    available=False,
+                    started=started,
+                    message="Piper Python API is unavailable",
+                )
+            if self.model_path is None:
+                return self._diagnostic(
+                    available=False,
+                    started=started,
+                    message="Piper model path is not configured",
+                )
+            if not self.model_path.exists():
+                return self._diagnostic(
+                    available=False,
+                    started=started,
+                    message="Piper model file is missing",
+                )
+            if self.config_path is not None and not self.config_path.exists():
+                return self._diagnostic(
+                    available=False,
+                    started=started,
+                    message="Piper config file is missing",
+                )
+            return self._diagnostic(
+                available=True,
+                started=started,
+                message="Piper Python provider configuration is ready",
+            )
+
         if not _executable_available(self.executable):
             return self._diagnostic(
                 available=False,

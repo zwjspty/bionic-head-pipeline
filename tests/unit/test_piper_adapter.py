@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,58 @@ from bionic_head.domain.models import Emotion
 def _write_script(path: Path, body: str) -> Path:
     path.write_text(body, encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def fake_piper_python_api(monkeypatch):
+    class FakeSynthesisConfig:
+        def __init__(
+            self,
+            speaker_id=None,
+            length_scale=None,
+            noise_scale=None,
+            noise_w_scale=None,
+            normalize_audio=True,
+            volume=1.0,
+        ) -> None:
+            self.speaker_id = speaker_id
+            self.length_scale = length_scale
+            self.noise_scale = noise_scale
+            self.noise_w_scale = noise_w_scale
+            self.normalize_audio = normalize_audio
+            self.volume = volume
+
+    class FakePiperVoice:
+        load_calls: list[dict[str, object]] = []
+        synthesize_calls: list[dict[str, object]] = []
+
+        @classmethod
+        def load(cls, model_path, config_path=None, use_cuda=False):
+            cls.load_calls.append(
+                {
+                    "model_path": str(model_path),
+                    "config_path": str(config_path) if config_path is not None else None,
+                    "use_cuda": use_cuda,
+                }
+            )
+            return cls()
+
+        def synthesize_wav(self, text, wav_file, syn_config=None):
+            import array
+
+            self.synthesize_calls.append({"text": text, "syn_config": syn_config})
+            samples = array.array("h", [1000, -1000] * 800)
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(samples.tobytes())
+
+    module = types.SimpleNamespace(
+        PiperVoice=FakePiperVoice,
+        SynthesisConfig=FakeSynthesisConfig,
+    )
+    monkeypatch.setitem(sys.modules, "piper", module)
+    return FakePiperVoice
 
 
 @pytest.fixture
@@ -96,6 +149,50 @@ with wave.open(str(output), "wb") as wav:
     assert result.path.with_suffix(result.path.suffix + ".arg.txt").read_text(
         encoding="utf-8"
     ) == "参数文本"
+
+
+@pytest.mark.asyncio
+async def test_python_runtime_reuses_loaded_voice(
+    fake_piper_python_api,
+    tmp_path,
+    turn_context,
+) -> None:
+    model_path = tmp_path / "zh_CN-huayan-medium.onnx"
+    config_path = tmp_path / "zh_CN-huayan-medium.onnx.json"
+    model_path.write_bytes(b"model")
+    config_path.write_text("{}", encoding="utf-8")
+    adapter = PiperTTSAdapter(
+        executable="",
+        args=[],
+        model_path=model_path,
+        config_path=config_path,
+        runtime="python",
+        timeout_seconds=2,
+        grace_seconds=0.1,
+        length_scale=0.9,
+        volume=0.8,
+    )
+
+    first = await adapter.synthesize("第一句", Emotion.FRIENDLY, 0.8, turn_context)
+    second = await adapter.synthesize("第二句", Emotion.CALM, 0.3, turn_context)
+
+    assert first.path.exists()
+    assert second.path.exists()
+    assert first.sample_rate == 16000
+    assert second.sample_rate == 16000
+    assert fake_piper_python_api.load_calls == [
+        {
+            "model_path": str(model_path),
+            "config_path": str(config_path),
+            "use_cuda": False,
+        }
+    ]
+    assert [call["text"] for call in fake_piper_python_api.synthesize_calls] == [
+        "第一句",
+        "第二句",
+    ]
+    assert fake_piper_python_api.synthesize_calls[0]["syn_config"].length_scale == 0.9
+    assert fake_piper_python_api.synthesize_calls[0]["syn_config"].volume == 0.8
 
 
 def test_rejects_unknown_template_variable() -> None:
@@ -216,6 +313,28 @@ async def test_diagnostics_checks_executable_model_and_template(tmp_path) -> Non
     assert result.adapter == "tts"
     assert result.provider == "piper"
     assert result.available is True
+
+
+@pytest.mark.asyncio
+async def test_python_runtime_diagnostics_does_not_require_executable(
+    fake_piper_python_api,
+    tmp_path,
+) -> None:
+    model_path = tmp_path / "zh_CN-huayan-medium.onnx"
+    model_path.write_bytes(b"model")
+    adapter = PiperTTSAdapter(
+        executable="",
+        args=[],
+        model_path=model_path,
+        runtime="python",
+        timeout_seconds=2,
+        grace_seconds=0.1,
+    )
+
+    result = await adapter.diagnostics()
+
+    assert result.available is True
+    assert "python" in result.message.lower()
 
 
 @pytest.mark.asyncio

@@ -37,9 +37,12 @@
       "prewarm": true
     },
     "piper": {
+      "runtime": "python",
       "executable": "/home/user/code/端到端/.venv/bin/piper",
       "args": ["--model", "{model_path}", "--output_file", "{output_path}"],
       "model_path": "/home/user/code/端到端/models/piper/zh_CN-huayan-medium.onnx",
+      "config_path": "/home/user/code/端到端/models/piper/zh_CN-huayan-medium.onnx.json",
+      "use_cuda": false,
       "cwd": null,
       "timeout_seconds": 120
     },

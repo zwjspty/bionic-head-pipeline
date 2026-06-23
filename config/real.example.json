@@ -37,9 +37,12 @@
       "prewarm": true
     },
     "piper": {
+      "runtime": "python",
       "executable": "",
       "args": ["--model", "{model_path}", "--output_file", "{output_path}"],
       "model_path": "",
+      "config_path": "",
+      "use_cuda": false,
       "cwd": null,
       "timeout_seconds": 120
     },
