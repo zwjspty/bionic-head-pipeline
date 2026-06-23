@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import count
+from collections.abc import Callable
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -34,6 +35,7 @@ class EventType(StrEnum):
     SERVER_FACE_FRAMES = "server.face.frames"
     SERVER_UE5_FRAMES = "server.ue5.frames"
     SERVER_SEGMENT_READY = "server.segment.ready"
+    SERVER_PLAYBACK_STOP = "server.playback.stop"
     SERVER_TURN_CANCELLED = "server.turn.cancelled"
     SERVER_PIPELINE_DONE = "server.pipeline.done"
     SERVER_PIPELINE_ERROR = "server.pipeline.error"
@@ -49,6 +51,7 @@ class EventEnvelope(BaseModel):
     session_id: UUID
     turn_id: UUID | None
     sequence: int = Field(ge=1)
+    generation_epoch: int | None = Field(default=None, ge=0)
     timestamp: datetime
     payload: dict[str, object]
 
@@ -105,9 +108,15 @@ class ClientPingPayload(_StrictPayload):
 
 
 class EventFactory:
-    def __init__(self, *, session_id: UUID) -> None:
+    def __init__(
+        self,
+        *,
+        session_id: UUID,
+        generation_epoch_getter: Callable[[], int] | None = None,
+    ) -> None:
         self.session_id = session_id
         self._sequence = count(start=1)
+        self._generation_epoch_getter = generation_epoch_getter
 
     def server(
         self,
@@ -115,19 +124,27 @@ class EventFactory:
         turn_id: UUID | None,
         payload: dict[str, object],
     ) -> EventEnvelope:
+        generation_epoch = self._generation_epoch()
         return EventEnvelope(
             type=EventType(event_type),
             event_id=uuid4(),
             session_id=self.session_id,
             turn_id=turn_id,
             sequence=next(self._sequence),
+            generation_epoch=generation_epoch,
             timestamp=datetime.now(timezone.utc),
             payload={
                 "session_id": self.session_id,
                 "turn_id": turn_id,
+                "generation_epoch": generation_epoch,
                 **payload,
             },
         )
+
+    def _generation_epoch(self) -> int:
+        if self._generation_epoch_getter is None:
+            return 0
+        return self._generation_epoch_getter()
 
 
 class ClientSequenceValidator:

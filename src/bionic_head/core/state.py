@@ -51,6 +51,8 @@ class TurnStateMachine:
 class TurnHandle:
     session_id: UUID
     turn_id: UUID
+    generation_epoch: int = 0
+    generation_epoch_getter: Callable[[], int] | None = None
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     active_task: asyncio.Task[object] | None = None
 
@@ -67,7 +69,17 @@ class TurnHandle:
         return self._terminal_event
 
     def is_current(self) -> bool:
-        return self.current and not self.cancellation.cancelled and self.terminal_event is None
+        return (
+            self.current
+            and not self.cancellation.cancelled
+            and self.terminal_event is None
+            and self._generation_epoch_is_current()
+        )
+
+    def _generation_epoch_is_current(self) -> bool:
+        if self.generation_epoch_getter is None:
+            return True
+        return self.generation_epoch_getter() == self.generation_epoch
 
     async def emit_if_current(self, operation: Callable[[], Awaitable[None]]) -> bool:
         async with self._lock:

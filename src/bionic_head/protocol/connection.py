@@ -52,6 +52,7 @@ class StreamConnection:
         self.watchdog_task: asyncio.Task[object] | None = None
         self._send_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
+        self.generation_epoch = 0
 
     async def run(self) -> None:
         admission = None
@@ -80,7 +81,10 @@ class StreamConnection:
                         continue
                     ClientSessionStartPayload.model_validate(envelope.payload)
                     self.session_id = envelope.session_id
-                    self.event_factory = EventFactory(session_id=self.session_id)
+                    self.event_factory = EventFactory(
+                        session_id=self.session_id,
+                        generation_epoch_getter=lambda: self.generation_epoch,
+                    )
                     try:
                         admission = self.container.sessions.admit(self.session_id)
                         await admission.__aenter__()
@@ -155,7 +159,12 @@ class StreamConnection:
             }:
                 await self._cancel_current_turn(emit=True)
 
-            self.current_turn = TurnHandle(session_id=self.session_id, turn_id=envelope.turn_id)
+            self.current_turn = TurnHandle(
+                session_id=self.session_id,
+                turn_id=envelope.turn_id,
+                generation_epoch=self.generation_epoch,
+                generation_epoch_getter=lambda: self.generation_epoch,
+            )
             self.pcm_buffer = bytearray()
             self.pending_binary_metadata = None
             self.turn_started_monotonic = monotonic()
@@ -254,11 +263,17 @@ class StreamConnection:
         if turn is None:
             return
         await turn.cancel()
+        if emit:
+            self.generation_epoch += 1
         if self.watchdog_task is not None:
             self.watchdog_task.cancel()
             self.watchdog_task = None
         self.pending_binary_metadata = None
         self.pcm_buffer = bytearray()
+        if emit:
+            await self._send_json_direct(
+                self._factory().server(EventType.SERVER_PLAYBACK_STOP, turn.turn_id, {})
+            )
         if emit and await turn.emit_terminal_once(EventType.SERVER_TURN_CANCELLED):
             await self._send_json_direct(
                 self._factory().server(EventType.SERVER_TURN_CANCELLED, turn.turn_id, {})

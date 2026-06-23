@@ -42,6 +42,28 @@ async def test_turn_handle_suppresses_events_after_cancel() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_handle_suppresses_events_after_generation_epoch_changes() -> None:
+    current_epoch = 1
+    handle = TurnHandle(
+        session_id=uuid4(),
+        turn_id=uuid4(),
+        generation_epoch=1,
+        generation_epoch_getter=lambda: current_epoch,
+    )
+    emitted: list[str] = []
+
+    async def emit() -> None:
+        emitted.append("event")
+
+    assert await handle.emit_if_current(emit) is True
+    current_epoch = 2
+
+    assert await handle.emit_if_current(emit) is False
+    assert await handle.commit_if_current(lambda: emitted.append("commit")) is False
+    assert emitted == ["event"]
+
+
+@pytest.mark.asyncio
 async def test_terminal_event_can_only_win_once() -> None:
     handle = TurnHandle(session_id=uuid4(), turn_id=uuid4())
 

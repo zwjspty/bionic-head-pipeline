@@ -29,6 +29,16 @@ def test_event_sequence_is_monotonic() -> None:
     assert first.timestamp.tzinfo is not None
 
 
+def test_server_event_includes_generation_epoch() -> None:
+    factory = EventFactory(session_id=uuid4(), generation_epoch_getter=lambda: 7)
+    turn_id = uuid4()
+
+    event = factory.server("server.state", turn_id, {"state": "LISTENING"})
+
+    assert event.generation_epoch == 7
+    assert event.payload["generation_epoch"] == 7
+
+
 @pytest.mark.asyncio
 async def test_concurrent_server_event_sequences_are_unique() -> None:
     factory = EventFactory(session_id=uuid4())
