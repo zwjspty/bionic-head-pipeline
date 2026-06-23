@@ -66,6 +66,7 @@ class StreamOrchestrator:
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
         face_tasks: list[asyncio.Task[_FaceSegmentResult]] = []
+        pending_llm_event: asyncio.Task[object] | None = None
         turn_dir = self.store.create_turn(turn.session_id, turn.turn_id)
         context = TurnContext(
             session_id=turn.session_id,
@@ -129,18 +130,16 @@ class StreamOrchestrator:
                 self._ensure_current(turn)
                 artifacts.asr = await self.registry.asr.transcribe(copied, context)
             mark_once("asr_final")
-            await self._emit_json(
+            await self._emit_server_json(
                 turn,
                 emit_json,
-                factory.server(
-                    EventType.SERVER_ASR_FINAL,
-                    turn.turn_id,
-                    {
-                        "text": artifacts.asr.text,
-                        "language": artifacts.asr.language,
-                        "confidence": artifacts.asr.confidence,
-                    },
-                ),
+                factory,
+                EventType.SERVER_ASR_FINAL,
+                {
+                    "text": artifacts.asr.text,
+                    "language": artifacts.asr.language,
+                    "confidence": artifacts.asr.confidence,
+                },
             )
 
             buffer = SentenceBuffer(
@@ -158,32 +157,38 @@ class StreamOrchestrator:
             with timeline.stage("llm", self.registry.llm.name):
                 iterator = self.registry.llm.chat_stream(artifacts.asr.text, [], context)
                 while True:
-                    try:
-                        event = await asyncio.wait_for(
-                            iterator.__anext__(),
-                            timeout=self.settings.stream.sentence_max_wait_ms / 1000.0,
-                        )
-                    except asyncio.TimeoutError:
+                    if pending_llm_event is None:
+                        pending_llm_event = asyncio.create_task(iterator.__anext__())
+
+                    done, _ = await asyncio.wait(
+                        {pending_llm_event},
+                        timeout=self.settings.stream.sentence_max_wait_ms / 1000.0,
+                    )
+                    if not done:
                         segment = buffer.flush()
                         if segment is not None:
                             chunk_index += 1
                             await schedule_segment(segment, chunk_index, fallback_llm)
                         continue
+
+                    try:
+                        event = pending_llm_event.result()
                     except StopAsyncIteration:
+                        pending_llm_event = None
                         break
+                    else:
+                        pending_llm_event = None
 
                     self._ensure_current(turn)
                     if event.kind == "token":
                         mark_once("llm_first_token")
                         reply_parts.append(event.text)
-                        await self._emit_json(
+                        await self._emit_server_json(
                             turn,
                             emit_json,
-                            factory.server(
-                                EventType.SERVER_LLM_TOKEN,
-                                turn.turn_id,
-                                {"text": event.text},
-                            ),
+                            factory,
+                            EventType.SERVER_LLM_TOKEN,
+                            {"text": event.text},
                         )
                         for segment in buffer.push(event.text):
                             chunk_index += 1
@@ -263,6 +268,9 @@ class StreamOrchestrator:
                     )
                 )
         finally:
+            if pending_llm_event is not None and not pending_llm_event.done():
+                pending_llm_event.cancel()
+                await asyncio.gather(pending_llm_event, return_exceptions=True)
             pending_face_tasks = [task for task in face_tasks if not task.done()]
             for task in pending_face_tasks:
                 task.cancel()
@@ -285,14 +293,12 @@ class StreamOrchestrator:
         emit_binary_pair: EmitBinaryPair,
     ) -> tuple[str, AudioArtifact]:
         chunk_id = f"chunk-{chunk_index:04d}"
-        await self._emit_json(
+        await self._emit_server_json(
             turn,
             emit_json,
-            factory.server(
-                EventType.SERVER_LLM_CHUNK,
-                turn.turn_id,
-                {"chunk_id": chunk_id, "text": segment},
-            ),
+            factory,
+            EventType.SERVER_LLM_CHUNK,
+            {"chunk_id": chunk_id, "text": segment},
         )
 
         with timeline.stage("tts", self.registry.tts.name):
@@ -300,9 +306,11 @@ class StreamOrchestrator:
             audio = await self.registry.tts.synthesize(segment, llm.emotion, llm.intensity, context)
         artifacts.audio = audio
         mark_once("first_tts_ready")
-        metadata = factory.server(
+        await self._emit_server_binary_pair(
+            turn,
+            emit_binary_pair,
+            factory,
             EventType.SERVER_TTS_AUDIO,
-            turn.turn_id,
             {
                 "chunk_id": chunk_id,
                 "format": "wav",
@@ -310,8 +318,8 @@ class StreamOrchestrator:
                 "byte_length": audio.byte_length,
                 "duration_seconds": audio.duration_seconds,
             },
+            audio.path.read_bytes(),
         )
-        await self._emit_binary_pair(turn, emit_binary_pair, metadata, audio.path.read_bytes())
         return chunk_id, audio
 
     async def _process_face_segment(
@@ -331,58 +339,67 @@ class StreamOrchestrator:
             self._ensure_current(turn)
             face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
         mark_once("first_face_ready")
-        await self._emit_json(
+        await self._emit_server_json(
             turn,
             emit_json,
-            factory.server(
-                EventType.SERVER_FACE_FRAMES,
-                turn.turn_id,
-                {
-                    "chunk_id": chunk_id,
-                    "fps": face.fps,
-                    "frame_count": face.frame_count,
-                    "frames": face.frames,
-                },
-            ),
+            factory,
+            EventType.SERVER_FACE_FRAMES,
+            {
+                "chunk_id": chunk_id,
+                "fps": face.fps,
+                "frame_count": face.frame_count,
+                "frames": face.frames,
+            },
         )
 
         with timeline.stage("ue5", self.registry.ue5.name):
             self._ensure_current(turn)
             ue5 = await self.registry.ue5.format(face, context)
         for chunk in chunk_ue5_frames(ue5, chunk_size=30, chunk_id=chunk_id):
-            await self._emit_json(
+            await self._emit_server_json(
                 turn,
                 emit_json,
-                factory.server(EventType.SERVER_UE5_FRAMES, turn.turn_id, chunk),
+                factory,
+                EventType.SERVER_UE5_FRAMES,
+                chunk,
             )
 
         mark_once("first_segment_ready")
-        await self._emit_json(
+        await self._emit_server_json(
             turn,
             emit_json,
-            factory.server(
-                EventType.SERVER_SEGMENT_READY,
-                turn.turn_id,
-                {"chunk_id": chunk_id},
-            ),
+            factory,
+            EventType.SERVER_SEGMENT_READY,
+            {"chunk_id": chunk_id},
         )
         return _FaceSegmentResult(chunk_index=chunk_index, face=face, ue5=ue5)
 
-    async def _emit_json(self, turn: TurnHandle, emit_json: EmitJSON, envelope: EventEnvelope) -> None:
+    async def _emit_server_json(
+        self,
+        turn: TurnHandle,
+        emit_json: EmitJSON,
+        factory: EventFactory,
+        event_type: EventType,
+        payload: dict[str, object],
+    ) -> None:
         async def operation() -> None:
+            envelope = factory.server(event_type, turn.turn_id, payload)
             await emit_json(envelope)
 
         if not await turn.emit_if_current(operation):
             raise asyncio.CancelledError
 
-    async def _emit_binary_pair(
+    async def _emit_server_binary_pair(
         self,
         turn: TurnHandle,
         emit_binary_pair: EmitBinaryPair,
-        envelope: EventEnvelope,
+        factory: EventFactory,
+        event_type: EventType,
+        payload: dict[str, object],
         binary: bytes,
     ) -> None:
         async def operation() -> None:
+            envelope = factory.server(event_type, turn.turn_id, payload)
             await emit_binary_pair(envelope, binary)
 
         if not await turn.emit_if_current(operation):

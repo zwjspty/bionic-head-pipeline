@@ -78,6 +78,21 @@ server.tts.audio -> server.face.frames -> server.ue5.frames -> server.segment.re
 
 连续成组出现。为了降低可听延迟，服务端可能先连续发送多个 `server.tts.audio`，再发送较早分段的 Face / UE5 事件。客户端必须使用 `chunk_id` 关联 TTS、Face、UE5 与 segment ready。
 
+其中 `server.tts.audio`、`server.face.frames`、`server.segment.ready` 使用分段级 `chunk_id`，例如：
+
+```text
+chunk-0001
+```
+
+`server.ue5.frames` 可能会把同一个分段继续拆成 frame 子块，它的 `chunk_id` 形式为：
+
+```text
+chunk-0001-0000
+chunk-0001-0001
+```
+
+客户端应把最后一个纯数字后缀视为 UE5 子块编号，父分段 ID 为前缀，例如 `chunk-0001-0000` 对应分段 `chunk-0001`。
+
 ## 终态与取消
 
 每个 turn 只能出现一个终态：

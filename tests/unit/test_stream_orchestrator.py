@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 
 import pytest
 
 from bionic_head.adapters.registry import AdapterRegistry, build_registry
-from bionic_head.domain.models import AudioArtifact, DiagnosticResult, Emotion, FaceArtifact, TurnContext
+from bionic_head.domain.models import (
+    AudioArtifact,
+    DiagnosticResult,
+    Emotion,
+    FaceArtifact,
+    LLMEvent,
+    LLMResult,
+    TurnContext,
+)
 
 
 class _OutOfOrderAudio2FaceAdapter:
@@ -84,6 +93,56 @@ class _StalingAudio2FaceAdapter:
         await asyncio.sleep(0)
 
 
+class _DelayedTokenLLMAdapter:
+    name = "delayed-token-llm"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def chat(
+        self,
+        text: str,
+        history: list[dict[str, str]],
+        context: TurnContext,
+    ) -> LLMResult:
+        return LLMResult(reply="你好", emotion=Emotion.FRIENDLY, intensity=0.8)
+
+    async def _chat_stream(
+        self,
+        text: str,
+        history: list[dict[str, str]],
+        context: TurnContext,
+    ) -> AsyncIterator[LLMEvent]:
+        self.call_count += 1
+        yield LLMEvent(kind="token", text="你")
+        await asyncio.sleep(0.05)
+        yield LLMEvent(kind="token", text="好")
+        yield LLMEvent(
+            kind="final",
+            result=LLMResult(reply="你好", emotion=Emotion.FRIENDLY, intensity=0.8),
+        )
+
+    def chat_stream(
+        self,
+        text: str,
+        history: list[dict[str, str]],
+        context: TurnContext,
+    ) -> AsyncIterator[LLMEvent]:
+        return self._chat_stream(text, history, context)
+
+    async def diagnostics(self) -> DiagnosticResult:
+        return DiagnosticResult(
+            adapter="llm",
+            provider=self.name,
+            available=True,
+            latency_ms=0.0,
+            message="test adapter ready",
+        )
+
+    async def cancel(self, turn_id) -> None:
+        await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 async def test_stream_emits_audio_before_face_then_segment_ready(stream_harness) -> None:
     await stream_harness.run()
@@ -118,6 +177,35 @@ async def test_stream_does_not_block_later_tts_on_slow_face(
     first_face_index = types.index("server.face.frames")
     assert len(tts_indexes) >= 2
     assert tts_indexes[1] < first_face_index
+
+
+@pytest.mark.asyncio
+async def test_stream_llm_timeout_flushes_without_cancelling_later_tokens(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.stream.sentence_max_wait_ms = 10
+    settings.stream.sentence_min_chars = 1
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=_DelayedTokenLLMAdapter(),
+        tts=registry.tts,
+        audio2face=registry.audio2face,
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry)
+
+    await harness.run()
+
+    tokens = [
+        str(envelope.payload["text"])
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.llm.token"
+    ]
+    assert tokens == ["你", "好"]
+    assert harness.terminal_types == ["server.pipeline.done"]
 
 
 @pytest.mark.asyncio
@@ -215,6 +303,7 @@ async def test_stream_stale_epoch_before_face_task_creation_suppresses_backgroun
     assert "server.face.frames" not in harness.json_types
     assert "server.ue5.frames" not in harness.json_types
     assert "server.segment.ready" not in harness.json_types
+    assert _server_sequences_are_contiguous(harness)
     assert not (harness.store.latest / "latest_pipeline.json").exists()
     assert not (harness.store.latest / "latest_ue5_blendshape.json").exists()
 
@@ -249,6 +338,7 @@ async def test_stream_stale_epoch_while_background_face_running_suppresses_face_
     assert "server.face.frames" not in harness.json_types
     assert "server.ue5.frames" not in harness.json_types
     assert "server.segment.ready" not in harness.json_types
+    assert _server_sequences_are_contiguous(harness)
     assert not (harness.store.latest / "latest_pipeline.json").exists()
     assert not (harness.store.latest / "latest_ue5_blendshape.json").exists()
 
@@ -291,3 +381,8 @@ async def test_stream_cancelled_turn_emits_cancelled(stream_harness) -> None:
     await stream_harness.run()
 
     assert stream_harness.terminal_types == ["server.turn.cancelled"]
+
+
+def _server_sequences_are_contiguous(harness) -> bool:
+    sequences = [envelope.sequence for envelope in harness.json_envelopes]
+    return sequences == list(range(1, len(sequences) + 1))
