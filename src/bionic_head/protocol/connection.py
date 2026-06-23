@@ -36,6 +36,15 @@ class PendingBinary:
     duration_ms: int
 
 
+@dataclass
+class PendingInterrupt:
+    turn_id: UUID
+    pcm_buffer: bytearray
+    speech_ms: int
+    turn_started_monotonic: float
+    last_non_silent_monotonic: float | None
+
+
 class StreamConnection:
     def __init__(self, websocket: WebSocket, container: AppContainer) -> None:
         self.websocket = websocket
@@ -46,6 +55,7 @@ class StreamConnection:
         self.state_machine = TurnStateMachine()
         self.current_turn: TurnHandle | None = None
         self.pending_binary_metadata: PendingBinary | None = None
+        self.interrupt_candidate: PendingInterrupt | None = None
         self.pcm_buffer = bytearray()
         self.last_non_silent_monotonic: float | None = None
         self.turn_started_monotonic: float | None = None
@@ -127,6 +137,8 @@ class StreamConnection:
         if envelope.session_id != self.session_id:
             raise self._violation("Client event session_id does not match the active session")
         if envelope.type not in {EventType.CLIENT_AUDIO_START, EventType.CLIENT_PING}:
+            if self._is_interrupt_candidate_event(envelope):
+                return
             if self.current_turn is None or envelope.turn_id != self.current_turn.turn_id:
                 raise self._violation("Client event turn_id does not match the active turn")
 
@@ -143,6 +155,9 @@ class StreamConnection:
             await self._handle_audio_chunk_metadata(envelope)
         elif envelope.type is EventType.CLIENT_AUDIO_END:
             ClientAudioEndPayload.model_validate(envelope.payload)
+            if self._is_interrupt_candidate_event(envelope):
+                self._discard_interrupt_candidate()
+                return
             await self._finalize_current_turn()
         elif envelope.type is EventType.CLIENT_TURN_CANCEL:
             ClientCancelPayload.model_validate(envelope.payload)
@@ -153,8 +168,13 @@ class StreamConnection:
     async def _start_turn(self, envelope: EventEnvelope) -> None:
         async with self._state_lock:
             if self.current_turn is not None and self.state_machine.state in {
-                TurnState.THINKING,
                 TurnState.SPEAKING,
+                TurnState.THINKING,
+            }:
+                self._start_interrupt_candidate(envelope.turn_id)
+                return
+
+            if self.current_turn is not None and self.state_machine.state in {
                 TurnState.LISTENING,
             }:
                 await self._cancel_current_turn(emit=True)
@@ -181,7 +201,7 @@ class StreamConnection:
             )
 
     async def _handle_audio_chunk_metadata(self, envelope: EventEnvelope) -> None:
-        if self.state_machine.state is not TurnState.LISTENING:
+        if not self._is_interrupt_candidate_event(envelope) and self.state_machine.state is not TurnState.LISTENING:
             raise self._violation("Audio chunk received outside LISTENING state")
         if self.pending_binary_metadata is not None:
             raise self._violation("Previous audio chunk metadata is still waiting for binary")
@@ -202,6 +222,9 @@ class StreamConnection:
         self.pending_binary_metadata = None
         if len(payload) != pending.byte_length:
             await self._protocol_error("Binary audio byte_length does not match metadata")
+            return
+        if self._is_interrupt_candidate_turn(pending.turn_id):
+            await self._handle_interrupt_candidate_binary(payload, pending.duration_ms)
             return
         if self.state_machine.state is not TurnState.LISTENING:
             await self._protocol_error("Binary audio arrived outside LISTENING state")
@@ -258,7 +281,7 @@ class StreamConnection:
         except asyncio.CancelledError:
             return
 
-    async def _cancel_current_turn(self, *, emit: bool) -> None:
+    async def _cancel_current_turn(self, *, emit: bool, clear_interrupt: bool = True) -> None:
         turn = self.current_turn
         if turn is None:
             return
@@ -278,8 +301,71 @@ class StreamConnection:
             await self._send_json_direct(
                 self._factory().server(EventType.SERVER_TURN_CANCELLED, turn.turn_id, {})
             )
+        if clear_interrupt:
+            self._discard_interrupt_candidate()
         self.current_turn = None
         self.state_machine = TurnStateMachine()
+
+    def _start_interrupt_candidate(self, turn_id: UUID) -> None:
+        now = monotonic()
+        self.interrupt_candidate = PendingInterrupt(
+            turn_id=turn_id,
+            pcm_buffer=bytearray(),
+            speech_ms=0,
+            turn_started_monotonic=now,
+            last_non_silent_monotonic=None,
+        )
+        self.pending_binary_metadata = None
+
+    async def _handle_interrupt_candidate_binary(self, payload: bytes, duration_ms: int) -> None:
+        candidate = self.interrupt_candidate
+        if candidate is None:
+            return
+        candidate.pcm_buffer.extend(payload)
+        if self._pcm_rms(payload) > self.container.settings.vad.interrupt_rms_threshold:
+            candidate.speech_ms += duration_ms
+            candidate.last_non_silent_monotonic = monotonic()
+        if candidate.speech_ms >= self.container.settings.vad.interrupt_min_speech_ms:
+            await self._accept_interrupt_candidate(candidate)
+
+    async def _accept_interrupt_candidate(self, candidate: PendingInterrupt) -> None:
+        self.interrupt_candidate = None
+        await self._cancel_current_turn(emit=True, clear_interrupt=False)
+        self.current_turn = TurnHandle(
+            session_id=self.session_id,
+            turn_id=candidate.turn_id,
+            generation_epoch=self.generation_epoch,
+            generation_epoch_getter=lambda: self.generation_epoch,
+        )
+        self.pcm_buffer = bytearray(candidate.pcm_buffer)
+        self.pending_binary_metadata = None
+        self.turn_started_monotonic = candidate.turn_started_monotonic
+        self.last_non_silent_monotonic = candidate.last_non_silent_monotonic
+        self.state_machine = TurnStateMachine()
+        self.state_machine.transition(TurnState.LISTENING)
+        self.watchdog_task = asyncio.create_task(self._watchdog())
+        await self._send_json_direct(
+            self._factory().server(
+                EventType.SERVER_STATE,
+                candidate.turn_id,
+                {"state": TurnState.LISTENING.value},
+            )
+        )
+
+    def _discard_interrupt_candidate(self) -> None:
+        if self.interrupt_candidate is not None:
+            if (
+                self.pending_binary_metadata is not None
+                and self.pending_binary_metadata.turn_id == self.interrupt_candidate.turn_id
+            ):
+                self.pending_binary_metadata = None
+            self.interrupt_candidate = None
+
+    def _is_interrupt_candidate_event(self, envelope: EventEnvelope) -> bool:
+        return self._is_interrupt_candidate_turn(envelope.turn_id)
+
+    def _is_interrupt_candidate_turn(self, turn_id: UUID | None) -> bool:
+        return self.interrupt_candidate is not None and turn_id == self.interrupt_candidate.turn_id
 
     async def _protocol_error(self, message: str) -> None:
         await self._send_pipeline_error(self._violation(message), self.current_turn.turn_id if self.current_turn else None)

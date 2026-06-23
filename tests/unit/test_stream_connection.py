@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import itertools
+import asyncio
+from array import array
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from bionic_head.api.app import create_app
+from bionic_head.core.state import TurnHandle, TurnState, TurnStateMachine
+from bionic_head.protocol.connection import StreamConnection
+from bionic_head.protocol.events import EventEnvelope, EventFactory
 
 
 def test_client_cancel_emits_playback_stop_before_turn_cancelled(mock_settings, tmp_path) -> None:
@@ -46,6 +51,147 @@ def test_client_cancel_emits_playback_stop_before_turn_cancelled(mock_settings, 
     assert playback_stop["payload"]["generation_epoch"] == 1
     assert cancelled["type"] == "server.turn.cancelled"
     assert cancelled["generation_epoch"] == 1
+
+
+async def test_barge_in_audio_start_does_not_stop_playback_before_speech(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    new_turn_id = uuid4()
+
+    await connection._start_turn(
+        _client_envelope("client.audio.start", connection.session_id, new_turn_id, 1, {})
+    )
+
+    assert old_turn_id == connection.current_turn.turn_id
+    assert not _sent_type(connection.websocket, "server.playback.stop")
+
+
+async def test_high_rms_barge_in_triggers_playback_stop_after_threshold(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    new_turn_id = uuid4()
+    speech = _pcm_chunk(amplitude=5000, duration_ms=40)
+
+    await connection._start_turn(
+        _client_envelope("client.audio.start", connection.session_id, new_turn_id, 1, {})
+    )
+    await _send_candidate_chunk(connection, new_turn_id, sequence=2, payload=speech, duration_ms=40)
+    assert not _sent_type(connection.websocket, "server.playback.stop")
+
+    await _send_candidate_chunk(connection, new_turn_id, sequence=3, payload=speech, duration_ms=40)
+
+    sent_types = [event["type"] for event in connection.websocket.sent_json]
+    assert sent_types[-3:] == [
+        "server.playback.stop",
+        "server.turn.cancelled",
+        "server.state",
+    ]
+    assert connection.websocket.sent_json[-3]["turn_id"] == str(old_turn_id)
+    assert connection.websocket.sent_json[-1]["turn_id"] == str(new_turn_id)
+    assert connection.websocket.sent_json[-1]["generation_epoch"] == 1
+    assert connection.current_turn.turn_id == new_turn_id
+    assert connection.state_machine.state is TurnState.LISTENING
+    await _cleanup_connection(connection)
+
+
+async def test_low_rms_barge_in_candidate_does_not_interrupt(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    new_turn_id = uuid4()
+    quiet = _pcm_chunk(amplitude=100, duration_ms=40)
+
+    await connection._start_turn(
+        _client_envelope("client.audio.start", connection.session_id, new_turn_id, 1, {})
+    )
+    await _send_candidate_chunk(connection, new_turn_id, sequence=2, payload=quiet, duration_ms=40)
+    await _send_candidate_chunk(connection, new_turn_id, sequence=3, payload=quiet, duration_ms=40)
+
+    assert connection.current_turn.turn_id == old_turn_id
+    assert not _sent_type(connection.websocket, "server.playback.stop")
+
+
+class _FakeWebSocket:
+    def __init__(self) -> None:
+        self.sent_json: list[dict[str, object]] = []
+        self.sent_bytes: list[bytes] = []
+
+    async def send_json(self, payload: dict[str, object]) -> None:
+        self.sent_json.append(payload)
+
+    async def send_bytes(self, payload: bytes) -> None:
+        self.sent_bytes.append(payload)
+
+
+def _thinking_connection(mock_settings, tmp_path):
+    settings = mock_settings.model_copy(deep=True)
+    settings.storage.root = tmp_path / "stream-data"
+    app = create_app(settings)
+    websocket = _FakeWebSocket()
+    connection = StreamConnection(websocket, app.state.container)
+    session_id = uuid4()
+    old_turn_id = uuid4()
+    connection.session_id = session_id
+    connection.event_factory = EventFactory(
+        session_id=session_id,
+        generation_epoch_getter=lambda: connection.generation_epoch,
+    )
+    connection.current_turn = TurnHandle(
+        session_id=session_id,
+        turn_id=old_turn_id,
+        generation_epoch=connection.generation_epoch,
+        generation_epoch_getter=lambda: connection.generation_epoch,
+    )
+    connection.state_machine = TurnStateMachine()
+    connection.state_machine.transition(TurnState.LISTENING)
+    connection.state_machine.transition(TurnState.THINKING)
+    return connection, old_turn_id
+
+
+async def _cleanup_connection(connection: StreamConnection) -> None:
+    if connection.watchdog_task is not None:
+        connection.watchdog_task.cancel()
+        await asyncio.sleep(0)
+
+
+async def _send_candidate_chunk(
+    connection: StreamConnection,
+    turn_id,
+    *,
+    sequence: int,
+    payload: bytes,
+    duration_ms: int,
+) -> None:
+    await connection._handle_audio_chunk_metadata(
+        _client_envelope(
+            "client.audio.chunk",
+            connection.session_id,
+            turn_id,
+            sequence,
+            {"byte_length": len(payload), "duration_ms": duration_ms},
+        )
+    )
+    await connection._handle_binary(payload)
+
+
+def _pcm_chunk(*, amplitude: int, duration_ms: int) -> bytes:
+    sample_count = 16000 * duration_ms // 1000
+    return array("h", [amplitude, -amplitude] * (sample_count // 2)).tobytes()
+
+
+def _sent_type(websocket: _FakeWebSocket, event_type: str) -> bool:
+    return any(event["type"] == event_type for event in websocket.sent_json)
+
+
+def _client_envelope(event_type: str, session_id, turn_id, sequence: int, payload: dict[str, object]) -> EventEnvelope:
+    return EventEnvelope.model_validate(
+        _client_event(event_type, session_id, turn_id, sequence, payload)
+    )
 
 
 def _client_event(event_type: str, session_id, turn_id, sequence: int, payload: dict[str, object]) -> dict[str, object]:
