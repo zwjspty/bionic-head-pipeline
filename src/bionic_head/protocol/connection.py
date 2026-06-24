@@ -90,6 +90,7 @@ class StreamConnection:
         self._outbound_queue: asyncio.PriorityQueue[_OutboundMessage] = asyncio.PriorityQueue()
         self._outbound_sender_task: asyncio.Task[None] | None = None
         self._outbound_sequence = 0
+        self._outbound_sent_sequence = 0
         self._outbound_stale_drop_count = 0
         self.generation_epoch = 0
 
@@ -495,11 +496,12 @@ class StreamConnection:
                     message.completion.set_result(None)
                 return
 
+            envelope = self._next_outbound_envelope(message.envelope)
             async with self._send_lock:
-                await self.websocket.send_json(message.envelope.model_dump(mode="json"))
+                await self.websocket.send_json(envelope.model_dump(mode="json"))
                 if message.binary is not None:
                     await self.websocket.send_bytes(message.binary)
-            self._observe_server_event(message.envelope)
+            self._observe_server_event(envelope)
             if message.completion is not None and not message.completion.done():
                 message.completion.set_result(None)
         except Exception as exc:
@@ -520,6 +522,10 @@ class StreamConnection:
         if message.envelope.generation_epoch is None:
             return False
         return message.envelope.generation_epoch != self.generation_epoch
+
+    def _next_outbound_envelope(self, envelope: EventEnvelope) -> EventEnvelope:
+        self._outbound_sent_sequence += 1
+        return envelope.model_copy(update={"sequence": self._outbound_sent_sequence})
 
     async def _yield_to_outbound_sender(self) -> None:
         for _ in range(6):

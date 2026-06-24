@@ -198,6 +198,7 @@ async def test_outbound_queue_prioritizes_playback_stop_and_drops_stale_normal_e
     await connection._yield_to_outbound_sender()
 
     assert [event["type"] for event in connection.websocket.sent_json] == ["server.playback.stop"]
+    assert [event["sequence"] for event in connection.websocket.sent_json] == [1]
     assert connection._outbound_stale_drop_count == 1
 
 
