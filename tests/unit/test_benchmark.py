@@ -208,3 +208,82 @@ def test_stream_metrics_from_summary_counts_face_stitch_metrics_across_segments(
 
     assert metrics["face_stitch_applied_count"] == 2.0
     assert metrics["face_stitch_reset_count"] == 1.0
+
+
+def test_stream_metrics_from_summary_extracts_eye_continuity_metrics() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "segments": {
+                "chunk-0001": {
+                    "tts_audio_event_ms": 100.0,
+                    "eye_continuity_enabled": True,
+                    "eye_continuity_applied": True,
+                    "eye_continuity_reset": False,
+                    "eye_smooth_channel_count": 2.0,
+                    "blink_channel_count": 1.0,
+                    "eye_continuity_overlap_frames": 6.0,
+                    "eye_continuity_actual_overlap_frames": 4.0,
+                    "eye_boundary_delta_before": 0.3,
+                    "eye_boundary_delta_after": 0.2,
+                    "blink_enabled": True,
+                    "blink_applied_count": 1.0,
+                    "blink_frame_count": 3.0,
+                    "blink_reset_count": 0.0,
+                }
+            }
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["eye_continuity_enabled"] == 1.0
+    assert metrics["eye_smooth_channel_count"] == 2.0
+    assert metrics["blink_channel_count"] == 1.0
+    assert metrics["eye_continuity_overlap_frames"] == 6.0
+    assert metrics["eye_continuity_actual_overlap_frames"] == 4.0
+    assert metrics["eye_boundary_delta_before"] == 0.3
+    assert metrics["eye_boundary_delta_after"] == 0.2
+    assert metrics["eye_continuity_applied_count"] == 1.0
+    assert metrics["eye_continuity_reset_count"] == 0.0
+    assert metrics["blink_applied_count"] == 1.0
+    assert metrics["blink_frame_count"] == 3.0
+    assert metrics["blink_reset_count"] == 0.0
+
+
+def test_stream_metrics_from_summary_counts_eye_continuity_metrics_across_segments() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "segments": {
+                "chunk-0001": {
+                    "tts_audio_event_ms": 100.0,
+                    "eye_continuity_applied": False,
+                    "eye_continuity_reset": True,
+                    "blink_applied_count": 0.0,
+                    "blink_frame_count": 0.0,
+                    "blink_reset_count": 1.0,
+                },
+                "chunk-0002": {
+                    "tts_audio_event_ms": 200.0,
+                    "eye_continuity_applied": True,
+                    "eye_continuity_reset": False,
+                    "blink_applied_count": 1.0,
+                    "blink_frame_count": 3.0,
+                    "blink_reset_count": 0.0,
+                },
+                "chunk-0003": {
+                    "tts_audio_event_ms": 300.0,
+                    "eye_continuity_applied": True,
+                    "eye_continuity_reset": False,
+                    "blink_applied_count": 0.0,
+                    "blink_frame_count": 0.0,
+                    "blink_reset_count": 0.0,
+                },
+            }
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["eye_continuity_applied_count"] == 2.0
+    assert metrics["eye_continuity_reset_count"] == 1.0
+    assert metrics["blink_applied_count"] == 1.0
+    assert metrics["blink_frame_count"] == 3.0
+    assert metrics["blink_reset_count"] == 1.0

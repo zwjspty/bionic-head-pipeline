@@ -113,16 +113,38 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
             "face_stitch_actual_overlap_frames",
             "face_boundary_delta_before",
             "face_boundary_delta_after",
+            "eye_smooth_channel_count",
+            "blink_channel_count",
+            "eye_continuity_overlap_frames",
+            "eye_continuity_actual_overlap_frames",
+            "eye_boundary_delta_before",
+            "eye_boundary_delta_after",
         ):
             value = _float_or_none(first_segment.get(key))
             if value is not None:
                 metrics[key] = value
+        enabled = _bool_or_none(first_segment.get("eye_continuity_enabled"))
+        if enabled is not None:
+            metrics["eye_continuity_enabled"] = 1.0 if enabled else 0.0
+        blink_enabled = _bool_or_none(first_segment.get("blink_enabled"))
+        if blink_enabled is not None:
+            metrics["blink_enabled"] = 1.0 if blink_enabled else 0.0
         applied = _bool_or_none(first_segment.get("face_stitch_applied"))
         if applied is not None:
             metrics["face_stitch_applied_count"] = 1.0 if applied else 0.0
         reset = _bool_or_none(first_segment.get("face_stitch_reset"))
         if reset is not None:
             metrics["face_stitch_reset_count"] = 1.0 if reset else 0.0
+        eye_applied = _bool_or_none(first_segment.get("eye_continuity_applied"))
+        if eye_applied is not None:
+            metrics["eye_continuity_applied_count"] = 1.0 if eye_applied else 0.0
+        eye_reset = _bool_or_none(first_segment.get("eye_continuity_reset"))
+        if eye_reset is not None:
+            metrics["eye_continuity_reset_count"] = 1.0 if eye_reset else 0.0
+        for key in ("blink_applied_count", "blink_frame_count", "blink_reset_count"):
+            value = _float_or_none(first_segment.get(key))
+            if value is not None:
+                metrics[key] = value
 
     segments = _stream_segments(summary)
     if segments:
@@ -140,6 +162,32 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
         ]
         if reset_values:
             metrics["face_stitch_reset_count"] = float(sum(1 for value in reset_values if value))
+        eye_applied_values = [
+            value
+            for value in (_bool_or_none(segment.get("eye_continuity_applied")) for segment in segments)
+            if value is not None
+        ]
+        if eye_applied_values:
+            metrics["eye_continuity_applied_count"] = float(
+                sum(1 for value in eye_applied_values if value)
+            )
+        eye_reset_values = [
+            value
+            for value in (_bool_or_none(segment.get("eye_continuity_reset")) for segment in segments)
+            if value is not None
+        ]
+        if eye_reset_values:
+            metrics["eye_continuity_reset_count"] = float(
+                sum(1 for value in eye_reset_values if value)
+            )
+        for key in ("blink_applied_count", "blink_frame_count", "blink_reset_count"):
+            values = [
+                value
+                for value in (_float_or_none(segment.get(key)) for segment in segments)
+                if value is not None
+            ]
+            if values:
+                metrics[key] = float(sum(values))
 
     for key in ("old_turn_face_leak_count", "stale_face_drop_count"):
         value = _float_or_none(summary.get(key))
