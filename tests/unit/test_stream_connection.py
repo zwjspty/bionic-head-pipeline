@@ -4,6 +4,7 @@ import itertools
 import asyncio
 from array import array
 from datetime import datetime, timezone
+import sys
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -51,6 +52,31 @@ def test_client_cancel_emits_playback_stop_before_turn_cancelled(mock_settings, 
     assert playback_stop["payload"]["generation_epoch"] == 1
     assert cancelled["type"] == "server.turn.cancelled"
     assert cancelled["generation_epoch"] == 1
+
+
+def test_session_start_can_prewarm_emotalk_sidecar_before_ready(mock_settings, tmp_path) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.storage.root = tmp_path / "stream-data"
+    settings.adapters.audio2face.provider = "emotalk_sidecar"
+    settings.providers.emotalk_sidecar.sidecar_command = [
+        sys.executable,
+        "-m",
+        "bionic_head.emotalk_fake_sidecar",
+    ]
+    settings.providers.emotalk_sidecar.prewarm_on_startup = False
+    settings.providers.emotalk_sidecar.prewarm_on_session_start = True
+    app = create_app(settings)
+    session_id = uuid4()
+
+    with TestClient(app) as client:
+        assert client.app.state.startup_diagnostics == []
+        with client.websocket_connect("/pipeline/stream") as ws:
+            ws.send_json(_client_event("client.session.start", session_id, None, 1, {}))
+            ready = ws.receive_json()
+
+            assert ready["type"] == "server.session.ready"
+            assert client.app.state.container.registry.audio2face.process_start_count == 1
+            assert client.app.state.container.registry.audio2face.call_count == 0
 
 
 async def test_barge_in_audio_start_does_not_stop_playback_before_speech(

@@ -158,6 +158,77 @@ def test_ue5_frames_are_saved_and_gap_is_rejected(tmp_path) -> None:
         )
 
 
+def test_receiver_records_segment_face_timing_from_tts_and_ue5_events(tmp_path) -> None:
+    now = iter([60.0, 60.100, 60.250, 60.480])
+    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
+    receiver.accept_json(
+        server_event(
+            event_type="server.tts.audio",
+            sequence=1,
+            payload={"chunk_id": "chunk-0001", "byte_length": 4, "format": "wav"},
+        )
+    )
+    receiver.accept_binary(b"RIFF")
+    receiver.accept_json(
+        server_event(
+            event_type="server.ue5.frames",
+            sequence=2,
+            payload={
+                "chunk_id": "chunk-0001-0000",
+                "segment_id": "chunk-0001",
+                "segment_index": 1,
+                "start_frame_index": 0,
+                "frame_count": 1,
+                "timing": {
+                    "face_total_ms": 375.0,
+                    "ue5_first_frame_after_tts_ms": 380.0,
+                    "e2e_first_visible_face_ms": 480.0,
+                },
+                "frames": [{"frame_index": 0, "time_seconds": 0.0, "weights": [0.0] * 52}],
+            },
+        )
+    )
+
+    segments = receiver.summary["segments"]
+    assert segments["chunk-0001"]["tts_audio_event_ms"] == 100.0
+    assert segments["chunk-0001"]["tts_binary_ms"] == 250.0
+    assert segments["chunk-0001"]["ue5_first_frame_ms"] == 480.0
+    assert segments["chunk-0001"]["ue5_first_frame_after_tts_ms"] == 380.0
+    assert segments["chunk-0001"]["face_total_ms"] == 375.0
+    assert receiver.summary["e2e_first_visible_face_ms"] == 480.0
+
+
+def test_receiver_counts_stale_face_as_old_turn_leak(tmp_path) -> None:
+    now = iter([70.0, 70.100, 70.200])
+    receiver = ClientReceiver(tmp_path, session_id=SESSION_ID, turn_id=TURN_ID, clock=lambda: next(now))
+    receiver.accept_json(
+        server_event(
+            event_type="server.playback.stop",
+            sequence=1,
+            generation_epoch=2,
+            payload={},
+        )
+    )
+    receiver.accept_json(
+        server_event(
+            event_type="server.ue5.frames",
+            sequence=2,
+            generation_epoch=1,
+            payload={
+                "chunk_id": "old-0000",
+                "segment_id": "old",
+                "start_frame_index": 0,
+                "frame_count": 1,
+                "frames": [{"frame_index": 0, "time_seconds": 0.0, "weights": [0.0] * 52}],
+            },
+        )
+    )
+
+    assert receiver.summary["stale_drop_count"] == 1
+    assert receiver.summary["stale_face_drop_count"] == 1
+    assert receiver.summary["old_turn_face_leak_count"] == 1
+
+
 def server_event(
     event_type: str,
     sequence: int,

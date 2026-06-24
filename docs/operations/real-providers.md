@@ -54,6 +54,32 @@ Use it when this machine has:
 - `/home/user/code/EmoTalk_release/scripts/export_blendshape_from_audio.py`;
 - output written as `{output_dir}/emotalk.npy`.
 
+`audio2face.provider = "emotalk_sidecar"` is the preferred low-latency local
+option for stream-style validation. It keeps a Python worker alive and sends
+raw PCM over the sidecar binary protocol, so the model is loaded once instead
+of once per segment.
+
+Use the Conda environment's Python executable directly:
+
+```json
+{
+  "sidecar_command": [
+    "/home/user/miniconda3/envs/emotalk/bin/python",
+    "-m",
+    "bionic_head.emotalk_sidecar_worker"
+  ],
+  "sidecar_cwd": "/home/user/code/端到端",
+  "sidecar_env": {
+    "PYTHONPATH": "src:."
+  }
+}
+```
+
+Do not use `conda run` for the stdin/stdout sidecar protocol. On this machine
+it can leave stdout empty and make the worker see EOF before it handles the
+request. The sidecar provider reports this as unsupported so deployment config
+does not silently fall back to the broken launch mode.
+
 This does not mean the deployment Morpheus provider is complete. Morpheus remains
 blocked until the `lyyMor` environment, Morpheus project path, and exact command
 format are confirmed on the target machine.
@@ -71,7 +97,16 @@ BIONIC_CONFIG=config/local.json BIONIC_TEST_WAV=/path/to/chinese.wav .venv/bin/p
 
 When using `config/emotalk.example.json`, the Morpheus provider smoke test is not
 the right isolated check; validate the full pipeline instead and confirm
-`/diagnostics` reports `audio2face.provider = emotalk`.
+`/diagnostics` reports `audio2face.provider = emotalk_sidecar`.
+
+For an isolated sidecar smoke test:
+
+```bash
+BIONIC_HEAD_RUN_REAL_EMOTALK=1 \
+BIONIC_HEAD_REAL_EMOTALK_COMMAND="/home/user/miniconda3/envs/emotalk/bin/python -m bionic_head.emotalk_sidecar_worker" \
+PYTHONPATH=src:. \
+.venv/bin/python -m pytest tests/integration/test_emotalk_sidecar_worker_real.py -q
+```
 
 Then run the protocol client:
 
@@ -136,3 +171,15 @@ Check:
 - `data/latest/*` belongs to the successful current turn;
 - client output contains ordered events, WAV chunks, UE5 JSON chunks, and `summary.json`;
 - benchmark report contains P50/P90 latency summaries.
+
+For focused Audio2Face A/B evidence between the old per-request EmoTalk command
+and the persistent sidecar:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python scripts/benchmark_emotalk_sidecar.py \
+  --config config/emotalk.example.json \
+  --wav /path/to/tts-or-input.wav \
+  --old-runs 1 \
+  --sidecar-runs 3 \
+  --output data/benchmarks/emotalk_sidecar_latest.json
+```

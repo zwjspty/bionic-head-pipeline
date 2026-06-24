@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -44,3 +45,19 @@ async def test_known_but_unconfigured_piper_raises_provider_unavailable(
 
     assert raised.value.code is ErrorCode.PROVIDER_UNAVAILABLE
     assert raised.value.provider == "piper"
+
+
+def test_registry_builds_emotalk_sidecar_without_starting_subprocess(mock_settings) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.adapters.audio2face.provider = "emotalk_sidecar"
+    settings.adapters.ue5.provider = "morpheus-raw"
+    settings.providers.emotalk_sidecar.sidecar_command = [
+        sys.executable,
+        "-m",
+        "bionic_head.emotalk_fake_sidecar",
+    ]
+
+    registry = build_registry(settings)
+
+    assert registry.audio2face.name == "emotalk_sidecar"
+    assert registry.audio2face.process_start_count == 0

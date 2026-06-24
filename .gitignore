@@ -8,3 +8,4 @@ config/local.json
 models/
 data/runs/
 data/latest/
+data/benchmarks/

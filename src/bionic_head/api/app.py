@@ -33,8 +33,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.startup_diagnostics = await app.state.container.prewarm()
-        yield
+        try:
+            app.state.startup_diagnostics = await app.state.container.prewarm()
+            yield
+        finally:
+            await app.state.container.close()
 
     app = FastAPI(title="Bionic Head Pipeline", version="0.1.0", lifespan=lifespan)
     app.state.container = AppContainer.create(resolved_settings)

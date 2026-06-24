@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from uuid import UUID
 import asyncio
+import inspect
 
 from fastapi import Request
 
@@ -109,25 +110,64 @@ class AppContainer:
         )
 
     async def prewarm(self) -> list[DiagnosticResult]:
+        results: list[DiagnosticResult] = []
         if (
-            self.settings.adapters.llm.provider != "ollama"
-            or not self.settings.providers.ollama.prewarm
+            self.settings.adapters.llm.provider == "ollama"
+            and self.settings.providers.ollama.prewarm
         ):
-            return []
+            started = perf_counter()
+            try:
+                results.append(await self.registry.llm.prewarm())  # type: ignore[attr-defined]
+            except PipelineException as exc:
+                results.append(
+                    DiagnosticResult(
+                        adapter="llm",
+                        provider=exc.provider or self.registry.llm.name,
+                        available=False,
+                        latency_ms=(perf_counter() - started) * 1000.0,
+                        message=exc.safe_message,
+                    )
+                )
+
+        if (
+            self.settings.adapters.audio2face.provider == "emotalk_sidecar"
+            and self.settings.providers.emotalk_sidecar.prewarm_on_startup
+        ):
+            result = await self.prewarm_audio2face()
+            if result is not None:
+                results.append(result)
+
+        return results
+
+    async def prewarm_audio2face(self) -> DiagnosticResult | None:
+        if self.settings.adapters.audio2face.provider != "emotalk_sidecar":
+            return None
 
         started = perf_counter()
         try:
-            return [await self.registry.llm.prewarm()]  # type: ignore[attr-defined]
+            return await self.registry.audio2face.prewarm()  # type: ignore[attr-defined]
         except PipelineException as exc:
-            return [
-                DiagnosticResult(
-                    adapter="llm",
-                    provider=exc.provider or self.registry.llm.name,
-                    available=False,
-                    latency_ms=(perf_counter() - started) * 1000.0,
-                    message=exc.safe_message,
-                )
-            ]
+            if self.settings.providers.emotalk_sidecar.prewarm_required:
+                raise
+            return DiagnosticResult(
+                adapter="audio2face",
+                provider=exc.provider or self.registry.audio2face.name,
+                available=False,
+                latency_ms=(perf_counter() - started) * 1000.0,
+                message=exc.safe_message,
+            )
+
+    async def close(self) -> None:
+        for name in ("asr", "llm", "tts", "audio2face", "ue5"):
+            adapter = getattr(self.registry, name, None)
+            if adapter is None:
+                continue
+            close = getattr(adapter, "close", None)
+            if close is None:
+                continue
+            result = close()
+            if inspect.isawaitable(result):
+                await result
 
 
 def get_container(request: Request) -> AppContainer:

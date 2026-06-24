@@ -22,7 +22,7 @@
     "asr": {"provider": "faster-whisper", "timeout_seconds": 120},
     "llm": {"provider": "ollama", "timeout_seconds": 180},
     "tts": {"provider": "piper", "timeout_seconds": 120},
-    "audio2face": {"provider": "emotalk", "timeout_seconds": 300},
+    "audio2face": {"provider": "emotalk_sidecar", "timeout_seconds": 20},
     "ue5": {"provider": "morpheus-raw", "timeout_seconds": 30}
   },
   "providers": {
@@ -71,6 +71,27 @@
       "output_npy_glob": "*.npy",
       "output_json_glob": "*.json",
       "timeout_seconds": 300
+    },
+    "emotalk_sidecar": {
+      "sidecar_command": [
+        "/home/user/miniconda3/envs/emotalk/bin/python",
+        "-m",
+        "bionic_head.emotalk_sidecar_worker"
+      ],
+      "sidecar_cwd": "/home/user/code/端到端",
+      "sidecar_env": {
+        "PYTHONPATH": "src:."
+      },
+      "sample_rate": 16000,
+      "fps": 30,
+      "timeout_seconds": 20.0,
+      "channel_count": 52,
+      "output_npy_name": "emotalk.npy",
+      "prewarm_on_startup": true,
+      "prewarm_on_session_start": false,
+      "prewarm_required": true,
+      "prewarm_audio_seconds": 1.0,
+      "prewarm_timeout_seconds": 30.0
     }
   },
   "storage": {"root": "data"}

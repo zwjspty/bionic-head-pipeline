@@ -223,6 +223,14 @@ class _Audio2FaceWrapper(_BaseWrapper):
             timeout_seconds=self._settings.timeout_seconds,
         )
 
+    async def prewarm(self) -> DiagnosticResult:
+        try:
+            return await self._inner.prewarm()  # type: ignore[attr-defined]
+        except PipelineException:
+            raise
+        except Exception as exc:
+            raise _provider_failed("audio2face.prewarm", self.name, exc) from exc
+
 
 class _UE5Wrapper(_BaseWrapper):
     async def format(self, face: FaceArtifact, context: TurnContext) -> UE5Payload:
@@ -298,6 +306,10 @@ def _build_audio2face(settings: AppSettings) -> Audio2FaceAdapter:
             settings.providers.emotalk,
             grace_seconds=settings.limits.subprocess_terminate_grace_seconds,
         )
+    if settings.adapters.audio2face.provider == "emotalk_sidecar":
+        from bionic_head.adapters.emotalk_sidecar import EmoTalkSidecarAudio2FaceAdapter
+
+        return EmoTalkSidecarAudio2FaceAdapter.from_settings(settings.providers.emotalk_sidecar)
     raise _provider_unavailable(settings.adapters.audio2face.provider)
 
 

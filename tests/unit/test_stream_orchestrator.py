@@ -158,6 +158,46 @@ async def test_stream_emits_audio_before_face_then_segment_ready(stream_harness)
 
 
 @pytest.mark.asyncio
+async def test_stream_records_face_segment_timing_and_ue5_payload_timing(stream_harness) -> None:
+    await stream_harness.run()
+
+    timeline_path = (
+        stream_harness.store.runs
+        / str(stream_harness.turn.session_id)
+        / str(stream_harness.turn.turn_id)
+        / "timeline.json"
+    )
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    stream = timeline["stream"]
+    segments = stream["segments"]
+    assert stream["old_turn_face_leak_count"] == 0
+    assert stream["stale_face_drop_count"] == 0
+    assert len(segments) >= 1
+    first = segments[0]
+    assert first["segment_id"] == first["chunk_id"] == "chunk-0001"
+    assert first["turn_id"] == str(stream_harness.turn.turn_id)
+    assert first["generation_epoch"] == 0
+    for key in [
+        "tts_audio_ready_ms",
+        "face_start_after_tts_ms",
+        "face_total_ms",
+        "ue5_first_frame_after_tts_ms",
+        "e2e_first_visible_face_ms",
+    ]:
+        assert isinstance(first[key], float)
+        assert first[key] >= 0.0
+
+    ue5 = next(
+        envelope
+        for envelope in stream_harness.json_envelopes
+        if envelope.type.value == "server.ue5.frames"
+    )
+    assert ue5.payload["segment_id"] == "chunk-0001"
+    assert ue5.payload["segment_index"] == 1
+    assert ue5.payload["timing"]["face_total_ms"] == first["face_total_ms"]
+
+
+@pytest.mark.asyncio
 async def test_stream_does_not_block_later_tts_on_slow_face(
     mock_settings,
     stream_harness_factory,
@@ -273,6 +313,15 @@ async def test_stream_cancel_after_tts_suppresses_background_face_and_latest(
     assert harness.terminal_types == ["server.turn.cancelled"]
     assert "server.face.frames" not in harness.json_types
     assert "server.ue5.frames" not in harness.json_types
+    timeline_path = (
+        harness.store.runs
+        / str(harness.turn.session_id)
+        / str(harness.turn.turn_id)
+        / "timeline.json"
+    )
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    assert timeline["stream"]["old_turn_face_leak_count"] == 0
+    assert timeline["stream"]["stale_face_drop_count"] >= 1
     assert not (harness.store.latest / "latest_pipeline.json").exists()
     assert not (harness.store.latest / "latest_ue5_blendshape.json").exists()
 
