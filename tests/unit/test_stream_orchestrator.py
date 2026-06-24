@@ -427,6 +427,51 @@ async def test_stream_latest_uses_highest_chunk_when_face_finishes_out_of_order(
 
 
 @pytest.mark.asyncio
+async def test_stream_emits_face_outputs_in_segment_order_when_face_finishes_out_of_order(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.reply = "第一段内容已经足够。第二段内容也足够。"
+    settings.stream.sentence_min_chars = 4
+    settings.stream.sentence_max_chars = 12
+    settings.face_stitching.enabled = True
+    settings.face_stitching.overlap_frames = 1
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=registry.llm,
+        tts=registry.tts,
+        audio2face=_OutOfOrderAudio2FaceAdapter(),
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry)
+
+    await harness.run()
+
+    face_payloads = [
+        envelope.payload
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.face.frames"
+    ]
+    ue5_payloads = [
+        envelope.payload
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.ue5.frames"
+    ]
+    ready_payloads = [
+        envelope.payload
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.segment.ready"
+    ]
+
+    assert [payload["segment_index"] for payload in face_payloads] == [1, 2]
+    assert [payload["segment_index"] for payload in ue5_payloads] == [1, 2]
+    assert [payload["segment_index"] for payload in ready_payloads] == [1, 2]
+    assert face_payloads[1]["timing"]["face_stitch_applied"] is True
+
+
+@pytest.mark.asyncio
 async def test_stream_background_face_failure_emits_error_without_latest(
     mock_settings,
     stream_harness_factory,
