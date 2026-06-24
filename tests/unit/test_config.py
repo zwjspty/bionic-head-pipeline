@@ -15,6 +15,10 @@ def test_load_mock_settings() -> None:
     assert settings.vad.engine == "rms"
     assert settings.vad.interrupt_min_speech_ms == 80
     assert settings.vad.interrupt_rms_threshold == pytest.approx(0.02)
+    assert settings.face_stitching.enabled is True
+    assert settings.face_stitching.overlap_frames == 8
+    assert settings.face_stitching.reset_on_new_turn is True
+    assert settings.face_stitching.record_boundary_metrics is True
 
 
 def test_load_real_example_settings() -> None:
@@ -176,3 +180,21 @@ def test_accepts_emotalk_sidecar_provider_config() -> None:
     assert settings.providers.emotalk_sidecar.prewarm_required is True
     assert settings.providers.emotalk_sidecar.prewarm_audio_seconds == pytest.approx(1.0)
     assert settings.providers.emotalk_sidecar.prewarm_timeout_seconds == pytest.approx(30.0)
+
+
+def test_accepts_face_stitching_config() -> None:
+    settings = AppSettings.model_validate(
+        {
+            "face_stitching": {
+                "enabled": False,
+                "overlap_frames": 5,
+                "reset_on_new_turn": True,
+                "record_boundary_metrics": False,
+            }
+        }
+    )
+
+    assert settings.face_stitching.enabled is False
+    assert settings.face_stitching.overlap_frames == 5
+    assert settings.face_stitching.reset_on_new_turn is True
+    assert settings.face_stitching.record_boundary_metrics is False

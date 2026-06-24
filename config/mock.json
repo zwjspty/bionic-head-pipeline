@@ -18,6 +18,12 @@
   },
   "retention": {"max_runs": 100},
   "limits": {"morpheus_max_concurrency": 1, "subprocess_terminate_grace_seconds": 2},
+  "face_stitching": {
+    "enabled": true,
+    "overlap_frames": 8,
+    "reset_on_new_turn": true,
+    "record_boundary_metrics": true
+  },
   "adapters": {
     "asr": {"provider": "mock", "timeout_seconds": 5},
     "llm": {"provider": "mock", "timeout_seconds": 5},

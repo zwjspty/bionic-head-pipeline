@@ -51,6 +51,15 @@ class LimitsSettings(BaseModel):
     subprocess_terminate_grace_seconds: int = Field(default=2, ge=1)
 
 
+class FaceStitchingSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    overlap_frames: int = Field(default=8, ge=0)
+    reset_on_new_turn: bool = True
+    record_boundary_metrics: bool = True
+
+
 class AdapterSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -194,6 +203,7 @@ class AppSettings(BaseModel):
     vad: VadSettings = Field(default_factory=VadSettings)
     retention: RetentionSettings = Field(default_factory=RetentionSettings)
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
+    face_stitching: FaceStitchingSettings = Field(default_factory=FaceStitchingSettings)
     adapters: AdaptersSettings = Field(default_factory=AdaptersSettings)
     mock: MockSettings = Field(default_factory=MockSettings)
     providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
