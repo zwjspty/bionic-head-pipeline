@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import monotonic
 from uuid import UUID
 import asyncio
@@ -45,6 +45,30 @@ class PendingInterrupt:
     last_non_silent_monotonic: float | None
 
 
+@dataclass(order=True)
+class _OutboundMessage:
+    priority: int
+    sequence: int
+    envelope: EventEnvelope = field(compare=False)
+    binary: bytes | None = field(default=None, compare=False)
+    completion: asyncio.Future[None] | None = field(default=None, compare=False)
+
+
+_HIGH_PRIORITY_EVENTS = {
+    EventType.SERVER_PLAYBACK_STOP,
+    EventType.SERVER_TURN_CANCELLED,
+    EventType.SERVER_PIPELINE_ERROR,
+}
+
+_WAIT_FOR_SEND_EVENTS = {
+    *_HIGH_PRIORITY_EVENTS,
+    EventType.SERVER_SESSION_READY,
+    EventType.SERVER_STATE,
+    EventType.SERVER_PONG,
+    EventType.SERVER_PIPELINE_DONE,
+}
+
+
 class StreamConnection:
     def __init__(self, websocket: WebSocket, container: AppContainer) -> None:
         self.websocket = websocket
@@ -62,6 +86,12 @@ class StreamConnection:
         self.watchdog_task: asyncio.Task[object] | None = None
         self._send_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
+        self._provider_cancel_tasks: set[asyncio.Task[list[object]]] = set()
+        self._outbound_queue: asyncio.PriorityQueue[_OutboundMessage] = asyncio.PriorityQueue()
+        self._outbound_sender_task: asyncio.Task[None] | None = None
+        self._outbound_sequence = 0
+        self._outbound_sent_sequence = 0
+        self._outbound_stale_drop_count = 0
         self.generation_epoch = 0
 
     async def run(self) -> None:
@@ -297,6 +327,7 @@ class StreamConnection:
         if turn is None:
             return
         await turn.cancel()
+        self._schedule_provider_cancel(turn.turn_id)
         if emit:
             self.generation_epoch += 1
         if self.watchdog_task is not None:
@@ -312,10 +343,27 @@ class StreamConnection:
             await self._send_json_direct(
                 self._factory().server(EventType.SERVER_TURN_CANCELLED, turn.turn_id, {})
             )
+        await self._yield_to_provider_cancel_tasks()
         if clear_interrupt:
             self._discard_interrupt_candidate()
         self.current_turn = None
         self.state_machine = TurnStateMachine()
+
+    def _schedule_provider_cancel(self, turn_id: UUID) -> None:
+        task: asyncio.Task[list[object]] = asyncio.create_task(
+            self.container.cancel_turn_providers(turn_id)
+        )
+        self._provider_cancel_tasks.add(task)
+        task.add_done_callback(self._provider_cancel_tasks.discard)
+
+    async def _yield_to_provider_cancel_tasks(self) -> None:
+        # Do not wait on slow provider cleanup here: playback.stop already went out.
+        # A few zero-time slices let no-op/fast cancels finish before short-lived
+        # test WebSocket loops close, avoiding pending-task noise.
+        for _ in range(6):
+            if not self._provider_cancel_tasks:
+                return
+            await asyncio.sleep(0)
 
     def _start_interrupt_candidate(self, turn_id: UUID) -> None:
         now = monotonic()
@@ -400,15 +448,92 @@ class StreamConnection:
         self.state_machine = TurnStateMachine()
 
     async def _send_json_direct(self, envelope: EventEnvelope) -> None:
-        async with self._send_lock:
-            await self.websocket.send_json(envelope.model_dump(mode="json"))
-        self._observe_server_event(envelope)
+        await self._send_outbound(envelope)
 
     async def _send_binary_pair_direct(self, envelope: EventEnvelope, binary: bytes) -> None:
-        async with self._send_lock:
-            await self.websocket.send_json(envelope.model_dump(mode="json"))
-            await self.websocket.send_bytes(binary)
-        self._observe_server_event(envelope)
+        await self._send_outbound(envelope, binary=binary)
+
+    async def _send_outbound(self, envelope: EventEnvelope, *, binary: bytes | None = None) -> None:
+        priority = self._outbound_priority(envelope)
+        wait_for_send = envelope.type in _WAIT_FOR_SEND_EVENTS
+        completion: asyncio.Future[None] | None = None
+        if wait_for_send:
+            completion = asyncio.get_running_loop().create_future()
+        self._outbound_sequence += 1
+        await self._outbound_queue.put(
+            _OutboundMessage(
+                priority=priority,
+                sequence=self._outbound_sequence,
+                envelope=envelope,
+                binary=binary,
+                completion=completion,
+            )
+        )
+        self._ensure_outbound_sender()
+        if completion is not None:
+            await completion
+
+    def _ensure_outbound_sender(self) -> None:
+        if self._outbound_sender_task is None or self._outbound_sender_task.done():
+            self._outbound_sender_task = asyncio.create_task(self._outbound_sender_loop())
+
+    async def _outbound_sender_loop(self) -> None:
+        try:
+            while True:
+                try:
+                    message = self._outbound_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                await self._send_outbound_message(message)
+        finally:
+            self._outbound_sender_task = None
+
+    async def _send_outbound_message(self, message: _OutboundMessage) -> None:
+        try:
+            if self._should_drop_outbound(message):
+                self._outbound_stale_drop_count += 1
+                if message.completion is not None and not message.completion.done():
+                    message.completion.set_result(None)
+                return
+
+            envelope = self._next_outbound_envelope(message.envelope)
+            async with self._send_lock:
+                await self.websocket.send_json(envelope.model_dump(mode="json"))
+                if message.binary is not None:
+                    await self.websocket.send_bytes(message.binary)
+            self._observe_server_event(envelope)
+            if message.completion is not None and not message.completion.done():
+                message.completion.set_result(None)
+        except Exception as exc:
+            if message.completion is not None and not message.completion.done():
+                message.completion.set_exception(exc)
+            raise
+
+    def _outbound_priority(self, envelope: EventEnvelope) -> int:
+        if envelope.type in _HIGH_PRIORITY_EVENTS:
+            return 0
+        return 10
+
+    def _should_drop_outbound(self, message: _OutboundMessage) -> bool:
+        if message.envelope.type in _HIGH_PRIORITY_EVENTS:
+            return False
+        if message.envelope.turn_id is None:
+            return False
+        if message.envelope.generation_epoch is None:
+            return False
+        return message.envelope.generation_epoch != self.generation_epoch
+
+    def _next_outbound_envelope(self, envelope: EventEnvelope) -> EventEnvelope:
+        self._outbound_sent_sequence += 1
+        return envelope.model_copy(update={"sequence": self._outbound_sent_sequence})
+
+    async def _yield_to_outbound_sender(self) -> None:
+        for _ in range(6):
+            if self._outbound_queue.empty() and (
+                self._outbound_sender_task is None or self._outbound_sender_task.done()
+            ):
+                return
+            await asyncio.sleep(0)
 
     def _observe_server_event(self, envelope: EventEnvelope) -> None:
         if envelope.type is EventType.SERVER_SEGMENT_READY and self.state_machine.state is TurnState.THINKING:

@@ -48,11 +48,22 @@ stale_face_drop_count         = 0
 下一阶段 P0 不再是盲目继续压模型耗时，而是：
 
 ```text
-Task 11:
-  取消正确性
-  sidecar request pump / drain-and-discard
-  有序 Face 后处理与发送
-  高优先级 playback.stop 出站通道
+Task 11: Cancellation-safe sidecar and ordered stream output
+  1. sidecar request pump / drain-and-discard
+  2. ordered Face postprocessing
+  3. playback.stop high-priority outbound queue
+  4. provider cancel 语义统一
+  5. interrupt stress benchmark
+```
+
+Task 11 的判断标准不是“更快”，而是：
+
+```text
+取消一定正确
+旧 sidecar response 一定不会污染新 turn
+Face 后处理一定按 segment_index 顺序
+playback.stop 一定优先发出
+连续 interrupt 后系统仍能复用 warm sidecar
 ```
 
 完整当前状态见：
@@ -160,6 +171,141 @@ EmoTalk Blender 3D 灰模头预览
 2. 暂不让 ASR partial 直接驱动 LLM。
 3. 暂不把服务端作为主要 echo cancellation 实现。
 4. 暂不把 UE5 未确认工程说成已接入。
+```
+
+## 3.1 Task 11 当前主线：取消正确性与有序输出
+
+Task 11 是当前最高优先级主线。它解决的不是模型速度，而是真实打断和并发情况下的正确性。
+
+### 3.1.1 sidecar request pump / drain-and-discard
+
+当前风险：
+
+```text
+旧 turn 已经把 request 写入 EmoTalk sidecar
+-> worker 正在阻塞 model.predict
+-> 用户打断，asyncio face task 被 cancel
+-> 主服务不再等待旧 response
+-> worker 仍会把旧 response 写到 stdout
+-> 新 turn 可能读到旧 response，造成协议错位
+```
+
+推荐结构：
+
+```text
+EmoTalkSidecarClient / SidecarRequestPump
+  owns process
+  owns stdin/stdout
+  owns request queue
+  owns pump task
+
+drive()
+  -> submit request
+  -> await future
+
+if drive task cancelled:
+  -> future 标记 cancelled/stale
+  -> pump 不取消底层 read
+  -> pump 继续读完旧 response
+  -> discard response
+  -> stdout/stdin 保持对齐
+```
+
+最低验收：
+
+```text
+旧请求已写入后取消
+fake worker 延迟后返回旧 response
+pump 读完旧 response 但不交给旧 Future
+紧接着新请求成功
+sidecar process_start_count == 1
+无 protocol mismatch
+```
+
+### 3.1.2 ordered Face postprocessing
+
+当前风险：
+
+```text
+每个 TTS segment 一个 background Face task
+多个 task 共用 FaceSegmentStitcher / EyeContinuityProcessor
+哪个 Face task 先完成，哪个就先修改状态并 emit
+```
+
+当前真实 sidecar 串行锁暂时掩盖了风险；未来多个 sidecar worker、GPU 并发、Student FaceDriver batch 后，segment 2 可能先于 segment 1 返回。
+
+推荐结构：
+
+```text
+并发层：Audio2Face inference
+有序层：OrderedFaceSequencer
+  按 segment_index 缓存 raw FaceArtifact
+  只释放 next_expected_segment
+  顺序执行 stitch -> eye continuity -> UE5 format -> emit
+```
+
+### 3.1.3 playback.stop 高优先级出站队列
+
+当前风险：
+
+```text
+TurnHandle.emit_if_current()
+  在持有 turn 内部锁时等待网络发送
+
+server.face.frames 是大 JSON
+  正在发送时 cancel 也要拿同一把锁
+  playback.stop 可能延迟
+```
+
+推荐结构：
+
+```text
+OutboundDispatcher
+  PriorityQueue
+  send_loop
+  sequence allocator
+  stale check before send
+
+P0: server.playback.stop / server.turn.cancelled / server.pipeline.error
+P1: server.tts.audio JSON + binary
+P2: server.ue5.frames
+P3: server.face.frames debug
+P4: server.segment.ready / state
+```
+
+### 3.1.4 provider cancel 语义
+
+Task 11 中 provider cancel 语义应统一为：
+
+```text
+LLM.cancel(turn_id):
+  close active stream
+
+TTS.cancel(turn_id):
+  best effort
+
+Audio2Face.cancel(turn_id):
+  mark queued/inflight request stale
+  pump drain response
+  默认不 kill warm sidecar
+
+UE5.cancel(turn_id):
+  no-op
+```
+
+`StreamConnection._cancel_current_turn()` 应 best-effort 调用 registry 各 provider 的 `cancel(turn_id)`，但不能让 provider cancel 失败阻塞 `server.playback.stop`。
+
+### 3.1.5 Task 11 完成标准
+
+```text
+1. 取消正在进行的 sidecar 推理不会导致 stdout/stdin 协议错位。
+2. 新 turn 可以继续使用同一个 warm sidecar。
+3. Face 后处理按 segment_index 顺序执行。
+4. playback.stop / turn.cancelled 通过高优先级队列发送。
+5. 旧 generation 的 queued face/ue5 事件发送前被 drop。
+6. interrupt 压力测试 50 次无 old_turn_face_leak。
+7. 真实 stream benchmark 不明显退化。
+8. full pytest 通过。
 ```
 
 ## 4. 主要接口

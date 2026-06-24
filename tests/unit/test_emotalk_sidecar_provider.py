@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 import json
 from pathlib import Path
 import sys
 import wave
+from uuid import uuid4
 
 import numpy as np
 import pytest
@@ -59,6 +61,15 @@ def _adapter(command: list[str], **overrides):
     )
 
 
+async def _wait_for_path(path: Path, *, timeout_seconds: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if path.exists():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {path}")
+
+
 @pytest.mark.asyncio
 async def test_provider_starts_fake_sidecar_and_returns_n_by_52(
     tmp_path: Path,
@@ -75,6 +86,90 @@ async def test_provider_starts_fake_sidecar_and_returns_n_by_52(
     assert face.path is not None
     assert face.path.exists()
     assert np.load(face.path, allow_pickle=False).shape == (30, 52)
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_cancelled_inflight_request_drains_old_response_before_next_request(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    first_read_marker = tmp_path / "first-read.marker"
+    adapter = _adapter(
+        _sidecar_script(
+            tmp_path / "slow_two_request_sidecar.py",
+            f"""
+import pathlib
+import sys
+import time
+
+import numpy as np
+
+from bionic_head.sidecar_protocol import (
+    SidecarResponse,
+    decode_request,
+    encode_message,
+    encode_response,
+    read_message,
+)
+
+
+def read_request():
+    header, body = read_message(sys.stdin.buffer)
+    return decode_request(encode_message(header, body))
+
+
+def write_response(request):
+    frames = np.zeros((1, 52), dtype=np.float32)
+    response = SidecarResponse.success(
+        session_id=request.session_id,
+        turn_id=request.turn_id,
+        generation_epoch=request.generation_epoch,
+        frame_count=1,
+        frames=frames.tobytes(),
+        fps=request.fps,
+    )
+    sys.stdout.buffer.write(encode_response(response))
+    sys.stdout.buffer.flush()
+
+
+first = read_request()
+pathlib.Path({str(first_read_marker)!r}).write_text("read", encoding="utf-8")
+time.sleep(0.15)
+write_response(first)
+second = read_request()
+write_response(second)
+time.sleep(3600)
+""",
+        ),
+        timeout_seconds=2.0,
+    )
+
+    first_task = asyncio.create_task(adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context))
+    await _wait_for_path(first_read_marker)
+    first_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_task
+
+    second_dir = tmp_path / "second-turn"
+    second_dir.mkdir()
+    second_context = replace(
+        turn_context,
+        turn_id=uuid4(),
+        artifact_dir=second_dir,
+        generation_epoch=1,
+    )
+
+    face = await adapter.drive(audio, Emotion.HAPPY, 0.9, second_context)
+
+    assert face.frame_count == 1
+    assert adapter.process_start_count == 1
+    assert adapter.process is not None
+    assert adapter.process.returncode is None
+    assert adapter.sidecar_request_cancelled_count == 1
+    assert adapter.sidecar_response_discarded_count == 1
 
     await adapter.close()
 

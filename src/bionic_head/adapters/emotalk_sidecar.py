@@ -7,6 +7,7 @@ import shutil
 import struct
 import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
@@ -38,6 +39,71 @@ class SidecarProcessError(PipelineException):
             retryable=retryable,
             message=message,
         )
+
+
+class SidecarPumpClosed(RuntimeError):
+    pass
+
+
+@dataclass
+class SidecarTransaction:
+    request: SidecarRequest
+    metrics: dict[str, float]
+    future: asyncio.Future[object]
+
+
+class SidecarRequestPump:
+    def __init__(self, adapter: "EmoTalkSidecarAudio2FaceAdapter") -> None:
+        self._adapter = adapter
+        self._queue: asyncio.Queue[SidecarTransaction | None] = asyncio.Queue()
+        self._task = asyncio.create_task(self._run())
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed or self._task.done()
+
+    async def submit(self, request: SidecarRequest, metrics: dict[str, float]) -> object:
+        if self._closed:
+            raise SidecarPumpClosed("EmoTalk sidecar request pump is closed")
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[object] = loop.create_future()
+        await self._queue.put(SidecarTransaction(request=request, metrics=metrics, future=future))
+        try:
+            return await future
+        except asyncio.CancelledError:
+            if future.cancelled():
+                self._adapter.sidecar_request_cancelled_count += 1
+            raise
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+
+    async def _run(self) -> None:
+        while True:
+            transaction = await self._queue.get()
+            if transaction is None:
+                return
+            try:
+                response = await self._adapter._transact(transaction.request, transaction.metrics)
+            except Exception as exc:
+                if not transaction.future.cancelled() and not transaction.future.done():
+                    transaction.future.set_exception(exc)
+                process = self._adapter.process
+                if process is None or process.returncode is not None:
+                    self._closed = True
+                    return
+                continue
+
+            if transaction.future.cancelled():
+                self._adapter.sidecar_response_discarded_count += 1
+                continue
+            if not transaction.future.done():
+                transaction.future.set_result(response)
 
 
 class EmoTalkSidecarAudio2FaceAdapter:
@@ -72,11 +138,16 @@ class EmoTalkSidecarAudio2FaceAdapter:
         self.last_prewarm_metrics: dict[str, float] = {}
         self.call_count = 0
         self.process_start_count = 0
+        self.sidecar_request_cancelled_count = 0
+        self.sidecar_response_discarded_count = 0
+        self.sidecar_protocol_reset_count = 0
+        self.sidecar_process_restart_count = 0
         self._process: asyncio.subprocess.Process | None = None
+        self._pump: SidecarRequestPump | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr_tail = ""
-        self._request_lock = asyncio.Lock()
         self._process_lock = asyncio.Lock()
+        self._pump_lock = asyncio.Lock()
 
     @classmethod
     def from_settings(
@@ -120,28 +191,27 @@ class EmoTalkSidecarAudio2FaceAdapter:
         metrics: dict[str, float] = {}
         request = self._build_request(audio.path, context, metrics)
 
-        async with self._request_lock:
-            self.call_count += 1
-            output_dir = (
-                context.artifact_dir / "face" / f"emotalk_sidecar_{self.call_count:04d}"
-            )
-            output_dir.mkdir(parents=True, exist_ok=True)
+        self.call_count += 1
+        output_dir = (
+            context.artifact_dir / "face" / f"emotalk_sidecar_{self.call_count:04d}"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-            try:
-                response = await asyncio.wait_for(
-                    self._transact(request, metrics),
-                    timeout=self.timeout_seconds,
-                )
-            except asyncio.TimeoutError as exc:
-                pid = self.process_pid
-                await self.close()
-                raise PipelineException(
-                    code=ErrorCode.PROVIDER_TIMEOUT,
-                    stage="audio2face",
-                    provider=self.name,
-                    retryable=True,
-                    message=f"EmoTalk sidecar timed out pid={pid}",
-                ) from exc
+        try:
+            response = await asyncio.wait_for(
+                self._submit_request(request, metrics),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            pid = self.process_pid
+            await self.close()
+            raise PipelineException(
+                code=ErrorCode.PROVIDER_TIMEOUT,
+                stage="audio2face",
+                provider=self.name,
+                retryable=True,
+                message=f"EmoTalk sidecar timed out pid={pid}",
+            ) from exc
 
         context.cancellation.raise_if_cancelled()
         return self._write_face_artifact(output_dir, request, response, metrics, total_start_ns)
@@ -176,9 +246,19 @@ class EmoTalkSidecarAudio2FaceAdapter:
 
     async def cancel(self, turn_id: UUID) -> None:
         del turn_id
-        await self.close()
+        # Task 11.1: cancellation should not kill a warm sidecar by default.
+        # Caller task cancellation marks the transaction future cancelled; the pump
+        # drains and discards the eventual response to keep stdout aligned.
+        await asyncio.sleep(0)
 
     async def close(self) -> None:
+        pump = self._pump
+        self._pump = None
+        if pump is not None:
+            await pump.close()
+        await self._close_process()
+
+    async def _close_process(self) -> None:
         async with self._process_lock:
             process = self._process
             stderr_task = self._stderr_task
@@ -229,32 +309,31 @@ class EmoTalkSidecarAudio2FaceAdapter:
         )
         metrics: dict[str, float] = {}
 
-        async with self._request_lock:
-            try:
-                response = await asyncio.wait_for(
-                    self._transact(request, metrics),
-                    timeout=self.prewarm_timeout_seconds,
-                )
-            except asyncio.TimeoutError as exc:
-                pid = self.process_pid
-                await self.close()
-                raise PipelineException(
-                    code=ErrorCode.PROVIDER_TIMEOUT,
-                    stage="audio2face.prewarm",
-                    provider=self.name,
-                    retryable=True,
-                    message=f"EmoTalk sidecar prewarm timed out pid={pid}",
-                ) from exc
-            except PipelineException as exc:
-                if exc.stage == "audio2face.prewarm":
-                    raise
-                raise PipelineException(
-                    code=exc.code,
-                    stage="audio2face.prewarm",
-                    provider=exc.provider or self.name,
-                    retryable=exc.retryable,
-                    message=exc.safe_message,
-                ) from exc
+        try:
+            response = await asyncio.wait_for(
+                self._submit_request(request, metrics),
+                timeout=self.prewarm_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            pid = self.process_pid
+            await self.close()
+            raise PipelineException(
+                code=ErrorCode.PROVIDER_TIMEOUT,
+                stage="audio2face.prewarm",
+                provider=self.name,
+                retryable=True,
+                message=f"EmoTalk sidecar prewarm timed out pid={pid}",
+            ) from exc
+        except PipelineException as exc:
+            if exc.stage == "audio2face.prewarm":
+                raise
+            raise PipelineException(
+                code=exc.code,
+                stage="audio2face.prewarm",
+                provider=exc.provider or self.name,
+                retryable=exc.retryable,
+                message=exc.safe_message,
+            ) from exc
 
         latency_ms = (time.perf_counter() - started) * 1000.0
         self.last_prewarm_metrics = {
@@ -394,8 +473,24 @@ class EmoTalkSidecarAudio2FaceAdapter:
             return response
         except PipelineException as exc:
             if exc.code is ErrorCode.OUTPUT_VALIDATION_FAILED:
-                await self.close()
+                self.sidecar_protocol_reset_count += 1
+                await self._close_process()
             raise
+
+    async def _submit_request(self, request: SidecarRequest, metrics: dict[str, float]) -> object:
+        pump = await self._ensure_pump()
+        metrics["sidecar_inflight_count"] = 1.0
+        metrics["sidecar_request_cancelled_count"] = float(self.sidecar_request_cancelled_count)
+        metrics["sidecar_response_discarded_count"] = float(self.sidecar_response_discarded_count)
+        return await pump.submit(request, metrics)
+
+    async def _ensure_pump(self) -> SidecarRequestPump:
+        if self._pump is not None and not self._pump.closed:
+            return self._pump
+        async with self._pump_lock:
+            if self._pump is None or self._pump.closed:
+                self._pump = SidecarRequestPump(self)
+            return self._pump
 
     async def _ensure_process(
         self,
@@ -435,6 +530,8 @@ class EmoTalkSidecarAudio2FaceAdapter:
                 raise self._process_start_failed(request, "EmoTalk sidecar failed to start", exc) from exc
             self._process = process
             self.process_start_count += 1
+            if self.process_start_count > 1:
+                self.sidecar_process_restart_count += 1
             self._stderr_task = asyncio.create_task(self._drain_stderr(process))
             return process
 

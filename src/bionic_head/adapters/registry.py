@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import TypeVar
 from uuid import UUID
 import asyncio
@@ -243,12 +244,71 @@ class _UE5Wrapper(_BaseWrapper):
 
 
 @dataclass(frozen=True)
+class ProviderCancelResult:
+    stage: str
+    provider: str
+    ok: bool
+    latency_ms: float
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class AdapterRegistry:
     asr: ASRAdapter
     llm: LLMAdapter
     tts: TTSAdapter
     audio2face: Audio2FaceAdapter
     ue5: UE5Adapter
+
+    async def cancel_turn(self, turn_id: UUID) -> list[ProviderCancelResult]:
+        stages: list[tuple[str, object]] = [
+            ("asr", self.asr),
+            ("llm", self.llm),
+            ("tts", self.tts),
+            ("audio2face", self.audio2face),
+            ("ue5", self.ue5),
+        ]
+        return await asyncio.gather(
+            *(self._cancel_provider(stage, adapter, turn_id) for stage, adapter in stages)
+        )
+
+    async def _cancel_provider(
+        self,
+        stage: str,
+        adapter: object,
+        turn_id: UUID,
+    ) -> ProviderCancelResult:
+        provider = str(getattr(adapter, "name", stage))
+        started = perf_counter()
+        try:
+            await adapter.cancel(turn_id)  # type: ignore[attr-defined]
+            return ProviderCancelResult(
+                stage=stage,
+                provider=provider,
+                ok=True,
+                latency_ms=(perf_counter() - started) * 1000.0,
+            )
+        except asyncio.CancelledError:
+            raise
+        except PipelineException as exc:
+            return ProviderCancelResult(
+                stage=stage,
+                provider=exc.provider or provider,
+                ok=False,
+                latency_ms=(perf_counter() - started) * 1000.0,
+                error_code=exc.code.value,
+                error_message=exc.safe_message,
+            )
+        except Exception as exc:
+            return ProviderCancelResult(
+                stage=stage,
+                provider=provider,
+                ok=False,
+                latency_ms=(perf_counter() - started) * 1000.0,
+                error_code=ErrorCode.PROVIDER_FAILED.value,
+                error_message=f"Provider cancel failed during {stage}",
+            )
 
 
 def _ensure_mock(settings: AdapterSettings) -> None:

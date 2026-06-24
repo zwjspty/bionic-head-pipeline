@@ -9,10 +9,11 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from bionic_head.adapters.registry import AdapterRegistry
 from bionic_head.api.app import create_app
 from bionic_head.core.state import TurnHandle, TurnState, TurnStateMachine
 from bionic_head.protocol.connection import StreamConnection
-from bionic_head.protocol.events import EventEnvelope, EventFactory
+from bionic_head.protocol.events import EventEnvelope, EventFactory, EventType
 
 
 def test_client_cancel_emits_playback_stop_before_turn_cancelled(mock_settings, tmp_path) -> None:
@@ -142,6 +143,85 @@ async def test_low_rms_barge_in_candidate_does_not_interrupt(
     assert not _sent_type(connection.websocket, "server.playback.stop")
 
 
+async def test_turn_cancel_schedules_best_effort_provider_cancel_without_blocking_stop(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, _old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    cancel_log: list[str] = []
+    connection.container.registry = AdapterRegistry(
+        asr=_CancelRecordingAdapter("asr", cancel_log),
+        llm=_CancelRecordingAdapter("llm", cancel_log),
+        tts=_CancelRecordingAdapter("tts", cancel_log, fail=True),
+        audio2face=_CancelRecordingAdapter("audio2face", cancel_log),
+        ue5=_CancelRecordingAdapter("ue5", cancel_log),
+    )
+
+    await connection._cancel_current_turn(emit=True)
+
+    sent_types = [event["type"] for event in connection.websocket.sent_json]
+    assert sent_types[-2:] == ["server.playback.stop", "server.turn.cancelled"]
+    assert len(cancel_log) < 5
+
+    provider_cancel_tasks = list(connection._provider_cancel_tasks)
+    assert provider_cancel_tasks
+    await asyncio.gather(*provider_cancel_tasks)
+
+    assert cancel_log == ["asr", "llm", "tts", "audio2face", "ue5"]
+    results = connection.container.last_provider_cancel_results
+    assert [result.stage for result in results] == ["asr", "llm", "tts", "audio2face", "ue5"]
+    assert [result.ok for result in results] == [True, True, False, True, True]
+    tts_result = results[2]
+    assert tts_result.provider == "tts"
+    assert tts_result.error_code == "provider_failed"
+
+
+async def test_outbound_queue_prioritizes_playback_stop_and_drops_stale_normal_event(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    normal = connection._factory().server(
+        EventType.SERVER_UE5_FRAMES,
+        old_turn_id,
+        {"chunk_id": "chunk-0001", "frames": []},
+    )
+
+    await connection._send_json_direct(normal)
+    connection.generation_epoch += 1
+    playback_stop = connection._factory().server(
+        EventType.SERVER_PLAYBACK_STOP,
+        old_turn_id,
+        {},
+    )
+    await connection._send_json_direct(playback_stop)
+    await connection._yield_to_outbound_sender()
+
+    assert [event["type"] for event in connection.websocket.sent_json] == ["server.playback.stop"]
+    assert [event["sequence"] for event in connection.websocket.sent_json] == [1]
+    assert connection._outbound_stale_drop_count == 1
+
+
+async def test_outbound_queue_drops_stale_binary_pair_without_leaking_bytes(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    tts_audio = connection._factory().server(
+        EventType.SERVER_TTS_AUDIO,
+        old_turn_id,
+        {"chunk_id": "chunk-0001", "byte_length": 4, "format": "wav", "sample_rate": 16000},
+    )
+
+    connection.generation_epoch += 1
+    await connection._send_binary_pair_direct(tts_audio, b"RIFF")
+    await connection._yield_to_outbound_sender()
+
+    assert connection.websocket.sent_json == []
+    assert connection.websocket.sent_bytes == []
+    assert connection._outbound_stale_drop_count == 1
+
+
 class _FakeWebSocket:
     def __init__(self) -> None:
         self.sent_json: list[dict[str, object]] = []
@@ -152,6 +232,26 @@ class _FakeWebSocket:
 
     async def send_bytes(self, payload: bytes) -> None:
         self.sent_bytes.append(payload)
+
+
+class _CancelRecordingAdapter:
+    def __init__(
+        self,
+        stage: str,
+        log: list[str],
+        *,
+        fail: bool = False,
+    ) -> None:
+        self.name = stage
+        self._stage = stage
+        self._log = log
+        self._fail = fail
+
+    async def cancel(self, turn_id) -> None:
+        await asyncio.sleep(0.05)
+        self._log.append(self._stage)
+        if self._fail:
+            raise RuntimeError(f"{self._stage} cancel failed")
 
 
 def _thinking_connection(mock_settings, tmp_path):

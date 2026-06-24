@@ -44,6 +44,14 @@ class _StreamArtifacts:
 
 
 @dataclass(frozen=True)
+class _RawFaceSegmentResult:
+    chunk_index: int
+    chunk_id: str
+    face: FaceArtifact
+    segment_timing: "_StreamSegmentTiming"
+
+
+@dataclass(frozen=True)
 class _FaceSegmentResult:
     chunk_index: int
     face: FaceArtifact
@@ -279,8 +287,10 @@ class StreamOrchestrator:
         )
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
-        face_tasks: list[asyncio.Task[_FaceSegmentResult]] = []
+        face_tasks: dict[int, asyncio.Task[_RawFaceSegmentResult]] = {}
+        emitted_face_results: list[_FaceSegmentResult] = []
         pending_llm_event: asyncio.Task[object] | None = None
+        next_face_emit_index = 1
         turn_dir = self.store.create_turn(turn.session_id, turn.turn_id)
         context = TurnContext(
             session_id=turn.session_id,
@@ -315,26 +325,52 @@ class StreamOrchestrator:
                 emit_json,
                 emit_binary_pair,
             )
-            face_tasks.append(
-                asyncio.create_task(
-                    self._process_face_segment(
-                        chunk_index,
-                        chunk_id,
-                        audio,
-                        llm,
+            face_tasks[chunk_index] = asyncio.create_task(
+                self._drive_face_segment(
+                    chunk_index,
+                    chunk_id,
+                    audio,
+                    llm,
+                    turn,
+                    context,
+                    timeline,
+                    stream_timing,
+                    segment_timing,
+                )
+            )
+            emitted_face_results.extend(await drain_face_segments(block=False))
+
+        async def drain_face_segments(*, block: bool) -> list[_FaceSegmentResult]:
+            nonlocal next_face_emit_index
+            emitted: list[_FaceSegmentResult] = []
+            while True:
+                task = face_tasks.get(next_face_emit_index)
+                if task is None:
+                    return emitted
+                if task.done():
+                    raw_result = task.result()
+                elif block:
+                    raw_result = await task
+                else:
+                    return emitted
+                emitted.append(
+                    await self._postprocess_and_emit_face_segment(
+                        raw_result.chunk_index,
+                        raw_result.chunk_id,
+                        raw_result.face,
                         turn,
                         context,
                         factory,
                         timeline,
                         mark_once,
                         stream_timing,
-                        segment_timing,
+                        raw_result.segment_timing,
                         face_stitcher,
                         eye_continuity,
                         emit_json,
                     )
                 )
-            )
+                next_face_emit_index += 1
 
         try:
             copied = turn_dir / "input.wav"
@@ -434,8 +470,8 @@ class StreamOrchestrator:
                     intensity=fallback_llm.intensity,
                 )
             if face_tasks:
-                face_results = await asyncio.gather(*face_tasks)
-                latest_face_result = max(face_results, key=lambda result: result.chunk_index)
+                emitted_face_results.extend(await drain_face_segments(block=True))
+                latest_face_result = max(emitted_face_results, key=lambda result: result.chunk_index)
                 artifacts.face = latest_face_result.face
                 artifacts.ue5 = latest_face_result.ue5
             self._ensure_complete(artifacts)
@@ -496,11 +532,11 @@ class StreamOrchestrator:
             if pending_llm_event is not None and not pending_llm_event.done():
                 pending_llm_event.cancel()
                 await asyncio.gather(pending_llm_event, return_exceptions=True)
-            pending_face_tasks = [task for task in face_tasks if not task.done()]
+            pending_face_tasks = [task for task in face_tasks.values() if not task.done()]
             for task in pending_face_tasks:
                 task.cancel()
             if face_tasks:
-                await asyncio.gather(*face_tasks, return_exceptions=True)
+                await asyncio.gather(*face_tasks.values(), return_exceptions=True)
             self.store.write_json(turn_dir / "timeline.json", timeline_snapshot())
 
     async def _process_audio_segment(
@@ -558,12 +594,43 @@ class StreamOrchestrator:
         )
         return chunk_id, audio, segment_timing
 
-    async def _process_face_segment(
+    async def _drive_face_segment(
         self,
         chunk_index: int,
         chunk_id: str,
         audio: AudioArtifact,
         llm: LLMResult,
+        turn: TurnHandle,
+        context: TurnContext,
+        timeline: Timeline,
+        stream_timing: _StreamTiming,
+        segment_timing: _StreamSegmentTiming,
+    ) -> _RawFaceSegmentResult:
+        try:
+            face_started_ns = monotonic_ns()
+            segment_timing.face_start_after_tts_ms = stream_timing.after_tts_ms(
+                segment_timing,
+                face_started_ns,
+            )
+            with timeline.stage("audio2face", self.registry.audio2face.name):
+                self._ensure_current(turn)
+                face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
+            segment_timing.face_total_ms = _duration_ms(face_started_ns, monotonic_ns())
+            return _RawFaceSegmentResult(
+                chunk_index=chunk_index,
+                chunk_id=chunk_id,
+                face=face,
+                segment_timing=segment_timing,
+            )
+        except asyncio.CancelledError:
+            stream_timing.record_stale_face_drop(chunk_id)
+            raise
+
+    async def _postprocess_and_emit_face_segment(
+        self,
+        chunk_index: int,
+        chunk_id: str,
+        face: FaceArtifact,
         turn: TurnHandle,
         context: TurnContext,
         factory: EventFactory,
@@ -576,14 +643,7 @@ class StreamOrchestrator:
         emit_json: EmitJSON,
     ) -> _FaceSegmentResult:
         try:
-            face_started_ns = monotonic_ns()
-            segment_timing.face_start_after_tts_ms = stream_timing.after_tts_ms(
-                segment_timing,
-                face_started_ns,
-            )
-            with timeline.stage("audio2face", self.registry.audio2face.name):
-                self._ensure_current(turn)
-                face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
+            self._ensure_current(turn)
             stitched_frames, stitch_metrics = face_stitcher.stitch(
                 face.frames,
                 session_id=str(turn.session_id),
@@ -621,7 +681,6 @@ class StreamOrchestrator:
                         "frame_count": len(eye_frames),
                     }
                 )
-            segment_timing.face_total_ms = _duration_ms(face_started_ns, monotonic_ns())
             mark_once("first_face_ready")
             await self._emit_server_json(
                 turn,
