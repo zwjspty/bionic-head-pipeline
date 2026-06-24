@@ -1,5 +1,7 @@
 # Task 8 EmoTalk Sidecar Implementation Plan
 
+> **Superseded, 2026-06-24:** This early Task 8 plan described an HTTP sidecar/provider name `emotalk-sidecar`. The implemented production path now uses provider `emotalk_sidecar`, `sidecar_command`, and the stdin/stdout binary protocol `emotalk-sidecar-v1` in `src/bionic_head/sidecar_protocol.py`. Use `docs/status/2026-06-24-current-state.md` plus the Task 10.5/Task 11 plans as the current source of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build an `emotalk-sidecar` Audio2Face provider and a Python-stdlib EmoTalk sidecar process so EmoTalk loads once and each stream segment sends a local binary inference request.

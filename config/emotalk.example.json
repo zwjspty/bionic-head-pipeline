@@ -64,22 +64,22 @@
     },
     "piper": {
       "runtime": "python",
-      "executable": "/home/user/code/端到端/.venv/bin/piper",
+      "executable": "/path/to/bionic-head-pipeline/.venv/bin/piper",
       "args": ["--model", "{model_path}", "--output_file", "{output_path}"],
-      "model_path": "/home/user/code/端到端/models/piper/zh_CN-huayan-medium.onnx",
-      "config_path": "/home/user/code/端到端/models/piper/zh_CN-huayan-medium.onnx.json",
+      "model_path": "/path/to/models/piper/zh_CN-huayan-medium.onnx",
+      "config_path": "/path/to/models/piper/zh_CN-huayan-medium.onnx.json",
       "use_cuda": false,
       "cwd": null,
       "timeout_seconds": 120
     },
     "emotalk": {
-      "executable": "/home/user/miniconda3/bin/conda",
+      "executable": "/path/to/miniconda3/bin/conda",
       "args": [
         "run",
         "-n",
         "emotalk",
         "python",
-        "/home/user/code/EmoTalk_release/scripts/export_blendshape_from_audio.py",
+        "/path/to/EmoTalk_release/scripts/export_blendshape_from_audio.py",
         "--wav_path",
         "{input_path}",
         "--out_path",
@@ -87,18 +87,18 @@
         "--device",
         "cpu"
       ],
-      "cwd": "/home/user/code/EmoTalk_release",
+      "cwd": "/path/to/EmoTalk_release",
       "output_npy_glob": "*.npy",
       "output_json_glob": "*.json",
       "timeout_seconds": 300
     },
     "emotalk_sidecar": {
       "sidecar_command": [
-        "/home/user/miniconda3/envs/emotalk/bin/python",
+        "/path/to/miniconda3/envs/emotalk/bin/python",
         "-m",
         "bionic_head.emotalk_sidecar_worker"
       ],
-      "sidecar_cwd": "/home/user/code/端到端",
+      "sidecar_cwd": "/path/to/bionic-head-pipeline",
       "sidecar_env": {
         "PYTHONPATH": "src:."
       },

@@ -1,5 +1,7 @@
 # Task 7 EmoTalk Segment Acceleration Implementation Plan
 
+> **Superseded context, 2026-06-24:** This plan predates the completed EmoTalk sidecar, prewarm, stream timing, face crossfade, and eye continuity framework. The implemented system has moved beyond “方案 A only”; use `docs/status/2026-06-24-current-state.md` for the current roadmap and Task 11 risks.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `/pipeline/stream` produce Face-friendly short segments and prevent slow Audio2Face from blocking later TTS chunks.
