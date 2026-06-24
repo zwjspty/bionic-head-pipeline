@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from bionic_head.adapters.registry import AdapterRegistry
 from bionic_head.api.app import create_app
 from bionic_head.core.state import TurnHandle, TurnState, TurnStateMachine
 from bionic_head.protocol.connection import StreamConnection
@@ -142,6 +143,39 @@ async def test_low_rms_barge_in_candidate_does_not_interrupt(
     assert not _sent_type(connection.websocket, "server.playback.stop")
 
 
+async def test_turn_cancel_schedules_best_effort_provider_cancel_without_blocking_stop(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, _old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    cancel_log: list[str] = []
+    connection.container.registry = AdapterRegistry(
+        asr=_CancelRecordingAdapter("asr", cancel_log),
+        llm=_CancelRecordingAdapter("llm", cancel_log),
+        tts=_CancelRecordingAdapter("tts", cancel_log, fail=True),
+        audio2face=_CancelRecordingAdapter("audio2face", cancel_log),
+        ue5=_CancelRecordingAdapter("ue5", cancel_log),
+    )
+
+    await connection._cancel_current_turn(emit=True)
+
+    sent_types = [event["type"] for event in connection.websocket.sent_json]
+    assert sent_types[-2:] == ["server.playback.stop", "server.turn.cancelled"]
+    assert len(cancel_log) < 5
+
+    provider_cancel_tasks = list(connection._provider_cancel_tasks)
+    assert provider_cancel_tasks
+    await asyncio.gather(*provider_cancel_tasks)
+
+    assert cancel_log == ["asr", "llm", "tts", "audio2face", "ue5"]
+    results = connection.container.last_provider_cancel_results
+    assert [result.stage for result in results] == ["asr", "llm", "tts", "audio2face", "ue5"]
+    assert [result.ok for result in results] == [True, True, False, True, True]
+    tts_result = results[2]
+    assert tts_result.provider == "tts"
+    assert tts_result.error_code == "provider_failed"
+
+
 class _FakeWebSocket:
     def __init__(self) -> None:
         self.sent_json: list[dict[str, object]] = []
@@ -152,6 +186,26 @@ class _FakeWebSocket:
 
     async def send_bytes(self, payload: bytes) -> None:
         self.sent_bytes.append(payload)
+
+
+class _CancelRecordingAdapter:
+    def __init__(
+        self,
+        stage: str,
+        log: list[str],
+        *,
+        fail: bool = False,
+    ) -> None:
+        self.name = stage
+        self._stage = stage
+        self._log = log
+        self._fail = fail
+
+    async def cancel(self, turn_id) -> None:
+        await asyncio.sleep(0.05)
+        self._log.append(self._stage)
+        if self._fail:
+            raise RuntimeError(f"{self._stage} cancel failed")
 
 
 def _thinking_connection(mock_settings, tmp_path):

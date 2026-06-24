@@ -62,6 +62,7 @@ class StreamConnection:
         self.watchdog_task: asyncio.Task[object] | None = None
         self._send_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
+        self._provider_cancel_tasks: set[asyncio.Task[list[object]]] = set()
         self.generation_epoch = 0
 
     async def run(self) -> None:
@@ -297,6 +298,7 @@ class StreamConnection:
         if turn is None:
             return
         await turn.cancel()
+        self._schedule_provider_cancel(turn.turn_id)
         if emit:
             self.generation_epoch += 1
         if self.watchdog_task is not None:
@@ -312,10 +314,27 @@ class StreamConnection:
             await self._send_json_direct(
                 self._factory().server(EventType.SERVER_TURN_CANCELLED, turn.turn_id, {})
             )
+        await self._yield_to_provider_cancel_tasks()
         if clear_interrupt:
             self._discard_interrupt_candidate()
         self.current_turn = None
         self.state_machine = TurnStateMachine()
+
+    def _schedule_provider_cancel(self, turn_id: UUID) -> None:
+        task: asyncio.Task[list[object]] = asyncio.create_task(
+            self.container.cancel_turn_providers(turn_id)
+        )
+        self._provider_cancel_tasks.add(task)
+        task.add_done_callback(self._provider_cancel_tasks.discard)
+
+    async def _yield_to_provider_cancel_tasks(self) -> None:
+        # Do not wait on slow provider cleanup here: playback.stop already went out.
+        # A few zero-time slices let no-op/fast cancels finish before short-lived
+        # test WebSocket loops close, avoiding pending-task noise.
+        for _ in range(6):
+            if not self._provider_cancel_tasks:
+                return
+            await asyncio.sleep(0)
 
     def _start_interrupt_candidate(self, turn_id: UUID) -> None:
         now = monotonic()

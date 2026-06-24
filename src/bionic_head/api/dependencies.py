@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from uuid import UUID
 import asyncio
@@ -10,7 +10,7 @@ import inspect
 
 from fastapi import Request
 
-from bionic_head.adapters.registry import AdapterRegistry, build_registry
+from bionic_head.adapters.registry import AdapterRegistry, ProviderCancelResult, build_registry
 from bionic_head.config import AppSettings
 from bionic_head.core.artifacts import ArtifactStore
 from bionic_head.domain.errors import ErrorCode, PipelineException
@@ -84,6 +84,7 @@ class AppContainer:
     registry: AdapterRegistry
     store: ArtifactStore
     sessions: SessionManager
+    last_provider_cancel_results: list[ProviderCancelResult] = field(default_factory=list)
 
     @classmethod
     def create(cls, settings: AppSettings) -> "AppContainer":
@@ -156,6 +157,11 @@ class AppContainer:
                 latency_ms=(perf_counter() - started) * 1000.0,
                 message=exc.safe_message,
             )
+
+    async def cancel_turn_providers(self, turn_id: UUID) -> list[ProviderCancelResult]:
+        results = await self.registry.cancel_turn(turn_id)
+        self.last_provider_cancel_results = results
+        return results
 
     async def close(self) -> None:
         for name in ("asr", "llm", "tts", "audio2face", "ue5"):
