@@ -91,11 +91,11 @@ def test_load_emotalk_example_settings() -> None:
     assert settings.providers.ollama.temperature == pytest.approx(0.3)
     assert settings.providers.ollama.prewarm is True
     assert settings.providers.emotalk_sidecar.sidecar_command == [
-        "/home/user/miniconda3/envs/emotalk/bin/python",
+        "/path/to/miniconda3/envs/emotalk/bin/python",
         "-m",
         "bionic_head.emotalk_sidecar_worker",
     ]
-    assert settings.providers.emotalk_sidecar.sidecar_cwd == Path("/home/user/code/端到端")
+    assert settings.providers.emotalk_sidecar.sidecar_cwd == Path("/path/to/bionic-head-pipeline")
     assert settings.providers.emotalk_sidecar.sidecar_env == {"PYTHONPATH": "src:."}
     assert settings.providers.emotalk_sidecar.sample_rate == 16000
     assert settings.providers.emotalk_sidecar.fps == 30
@@ -107,13 +107,13 @@ def test_load_emotalk_example_settings() -> None:
     assert settings.providers.emotalk_sidecar.prewarm_required is True
     assert settings.providers.emotalk_sidecar.prewarm_audio_seconds == pytest.approx(1.0)
     assert settings.providers.emotalk_sidecar.prewarm_timeout_seconds == pytest.approx(30.0)
-    assert settings.providers.emotalk.executable == "/home/user/miniconda3/bin/conda"
+    assert settings.providers.emotalk.executable == "/path/to/miniconda3/bin/conda"
     assert settings.providers.emotalk.args == [
         "run",
         "-n",
         "emotalk",
         "python",
-        "/home/user/code/EmoTalk_release/scripts/export_blendshape_from_audio.py",
+        "/path/to/EmoTalk_release/scripts/export_blendshape_from_audio.py",
         "--wav_path",
         "{input_path}",
         "--out_path",
@@ -121,7 +121,7 @@ def test_load_emotalk_example_settings() -> None:
         "--device",
         "cpu",
     ]
-    assert settings.providers.emotalk.cwd == Path("/home/user/code/EmoTalk_release")
+    assert settings.providers.emotalk.cwd == Path("/path/to/EmoTalk_release")
     assert settings.providers.emotalk.output_npy_glob == "*.npy"
     assert settings.providers.emotalk.timeout_seconds == 300
     assert settings.providers.piper.runtime == "python"

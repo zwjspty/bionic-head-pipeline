@@ -1,5 +1,66 @@
 # 项目说明 goal：中文端到端数字人低延迟可打断系统
 
+## 0. 2026-06-24 当前状态校准
+
+当前项目已经完成“实验室级准实时数字人 MVP”：
+
+```text
+真实 HTTP /pipeline/audio 可运行
+真实 WebSocket /pipeline/stream 可运行
+faster-whisper / Ollama / Piper / EmoTalk sidecar / morpheus_52_raw 已形成真实链路
+EmoTalk 热路径约 0.37–0.52s
+stream 具备 benchmark、generation_epoch、stale-drop、face crossfade、eye continuity 框架
+```
+
+当前更准确的判断：
+
+```text
+已完成:
+  阶段四“句子级增量”
+  Face 连续性优化
+  sidecar 常驻化和预热
+
+部分完成:
+  RMS barge-in / playback.stop 控制面
+  Eye continuity 框架
+
+尚未完成:
+  产品级全双工
+  真实播放客户端 / AEC
+  多轮对话记忆
+  真实 UE5 曲线映射
+  partial ASR
+  session-level blink 视觉验收
+```
+
+最新真实 stream benchmark 基线：
+
+```text
+10/10 success
+tts_first_audio_ms p50        ≈ 583ms
+e2e_first_visible_face_ms p50 ≈ 1062ms
+face_total_ms p50             ≈ 469ms
+face_total_ms p90             ≈ 519ms
+old_turn_face_leak_count      = 0
+stale_face_drop_count         = 0
+```
+
+下一阶段 P0 不再是盲目继续压模型耗时，而是：
+
+```text
+Task 11:
+  取消正确性
+  sidecar request pump / drain-and-discard
+  有序 Face 后处理与发送
+  高优先级 playback.stop 出站通道
+```
+
+完整当前状态见：
+
+```text
+docs/status/2026-06-24-current-state.md
+```
+
 ## 1. 项目目标
 
 本项目目标是在现有仿生人头链路基础上，构建一个支持中文语音交互、情绪表达、面部 blendshape 生成、灰模预览和未来 UE5 实时驱动的模块化端到端系统。
