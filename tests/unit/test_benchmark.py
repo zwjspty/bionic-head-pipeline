@@ -120,3 +120,36 @@ def test_stream_metrics_from_summary_extracts_playback_stop_latency() -> None:
     )
 
     assert metrics["interrupt_to_playback_stop_ms"] == 88.0
+
+
+def test_stream_metrics_from_summary_extracts_segment_face_timing_and_stale_counts() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "old_turn_face_leak_count": 0,
+            "stale_face_drop_count": 2,
+            "segments": {
+                "chunk-0001": {
+                    "tts_audio_event_ms": 100.0,
+                    "tts_binary_ms": 125.0,
+                    "face_total_ms": 410.0,
+                    "ue5_first_frame_after_tts_ms": 430.0,
+                    "ue5_first_frame_ms": 530.0,
+                },
+                "chunk-0002": {
+                    "tts_audio_event_ms": 200.0,
+                    "tts_binary_ms": 225.0,
+                    "face_total_ms": 390.0,
+                    "ue5_first_frame_after_tts_ms": 405.0,
+                    "ue5_first_frame_ms": 605.0,
+                },
+            },
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["tts_audio_ready_ms"] == 100.0
+    assert metrics["face_total_ms"] == 410.0
+    assert metrics["ue5_first_frame_after_tts_ms"] == 430.0
+    assert metrics["e2e_first_visible_face_ms"] == 530.0
+    assert metrics["old_turn_face_leak_count"] == 0.0
+    assert metrics["stale_face_drop_count"] == 2.0

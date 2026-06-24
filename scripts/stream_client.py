@@ -22,6 +22,7 @@ class ProtocolError(RuntimeError):
 @dataclass
 class PendingTTS:
     chunk_id: str
+    segment_id: str
     byte_length: int
     format: str
 
@@ -55,9 +56,13 @@ class ClientReceiver:
             "event_counts": {},
             "event_first_ms": {},
             "first_tts_binary_ms": None,
+            "e2e_first_visible_face_ms": None,
+            "segments": {},
             "latest_generation_epoch": None,
             "playback_stop_count": 0,
             "stale_drop_count": 0,
+            "stale_face_drop_count": 0,
+            "old_turn_face_leak_count": 0,
         }
         (self.output_dir / "tts").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "ue5").mkdir(parents=True, exist_ok=True)
@@ -77,12 +82,19 @@ class ClientReceiver:
         event_epoch = self._event_generation_epoch(envelope, payload)
         if self._is_stale_generation(event_epoch):
             self.summary["stale_drop_count"] = int(self.summary["stale_drop_count"]) + 1
+            if event_type in {"server.face.frames", "server.ue5.frames"}:
+                self.summary["stale_face_drop_count"] = (
+                    int(self.summary["stale_face_drop_count"]) + 1
+                )
+                self.summary["old_turn_face_leak_count"] = (
+                    int(self.summary["old_turn_face_leak_count"]) + 1
+                )
             return
         self._record_generation_epoch(event_epoch)
         if event_type == "server.tts.audio":
-            self._accept_tts_metadata(payload)
+            self._accept_tts_metadata(payload, received_ms)
         elif event_type == "server.ue5.frames":
-            self._accept_ue5_frames(payload)
+            self._accept_ue5_frames(payload, received_ms)
         elif event_type == "server.segment.ready":
             chunk_id = str(payload.get("chunk_id", f"segment-{len(self.pending_segments)}"))
             self.pending_segments[chunk_id] = payload
@@ -105,11 +117,14 @@ class ClientReceiver:
         if pending.format != "wav":
             self.pending_tts = None
             raise ProtocolError("only WAV TTS chunks are supported")
+        received_ms = self._elapsed_ms()
         path = self.output_dir / "tts" / f"{pending.chunk_id}.wav"
         path.write_bytes(payload)
         self.summary["tts_chunks"] = int(self.summary["tts_chunks"]) + 1
         if self.summary["first_tts_binary_ms"] is None:
-            self.summary["first_tts_binary_ms"] = self._elapsed_ms()
+            self.summary["first_tts_binary_ms"] = received_ms
+        segment = self._segment_summary(pending.segment_id)
+        segment["tts_binary_ms"] = received_ms
         self.pending_tts = None
 
     def finish(self) -> None:
@@ -138,26 +153,36 @@ class ClientReceiver:
             elif parsed_turn_id != self.turn_id:
                 raise ProtocolError("server event turn_id does not match")
 
-    def _accept_tts_metadata(self, payload: dict[str, object]) -> None:
+    def _accept_tts_metadata(self, payload: dict[str, object], received_ms: float) -> None:
         if self.pending_tts is not None:
             raise ProtocolError("previous server.tts.audio is still waiting for binary")
         chunk_id = str(payload.get("chunk_id", "chunk"))
+        segment_id = str(payload.get("segment_id", chunk_id))
         byte_length = payload.get("byte_length")
         if not isinstance(byte_length, int) or byte_length < 1:
             raise ProtocolError("server.tts.audio byte_length must be positive")
+        segment = self._segment_summary(segment_id)
+        segment["chunk_id"] = chunk_id
+        segment["segment_id"] = segment_id
+        segment["tts_audio_event_ms"] = received_ms
+        segment_index = payload.get("segment_index")
+        if isinstance(segment_index, int):
+            segment["segment_index"] = segment_index
+        self._merge_numeric_timing(segment, payload.get("timing"))
         self.pending_tts = PendingTTS(
             chunk_id=chunk_id,
+            segment_id=segment_id,
             byte_length=byte_length,
             format=str(payload.get("format", "")),
         )
 
-    def _accept_ue5_frames(self, payload: dict[str, object]) -> None:
+    def _accept_ue5_frames(self, payload: dict[str, object], received_ms: float) -> None:
         chunk_id = str(payload.get("chunk_id", f"ue5-{self.summary['ue5_chunks']}"))
         start = payload.get("start_frame_index")
         frame_count = payload.get("frame_count")
         if not isinstance(start, int) or not isinstance(frame_count, int):
             raise ProtocolError("server.ue5.frames requires start_frame_index and frame_count")
-        segment_id = self._segment_id_for_ue5_chunk(chunk_id)
+        segment_id = str(payload.get("segment_id") or self._segment_id_for_ue5_chunk(chunk_id))
         expected_start = self.next_ue5_frame_index_by_segment.get(segment_id, 0)
         if start != expected_start:
             raise ProtocolError("server.ue5.frames has a gap or overlap")
@@ -166,6 +191,34 @@ class ClientReceiver:
         self.pending_ue5_chunks[chunk_id] = payload
         self.next_ue5_frame_index_by_segment[segment_id] = start + frame_count
         self.summary["ue5_chunks"] = int(self.summary["ue5_chunks"]) + 1
+        segment = self._segment_summary(segment_id)
+        segment["segment_id"] = segment_id
+        if "ue5_first_frame_ms" not in segment:
+            segment["ue5_first_frame_ms"] = received_ms
+        self._merge_numeric_timing(segment, payload.get("timing"))
+        if "ue5_first_frame_after_tts_ms" not in segment:
+            tts_event_ms = segment.get("tts_audio_event_ms")
+            if isinstance(tts_event_ms, (int, float)):
+                segment["ue5_first_frame_after_tts_ms"] = round(received_ms - float(tts_event_ms), 3)
+        if self.summary["e2e_first_visible_face_ms"] is None:
+            self.summary["e2e_first_visible_face_ms"] = segment["ue5_first_frame_ms"]
+
+    def _segment_summary(self, segment_id: str) -> dict[str, object]:
+        segments = self.summary["segments"]
+        if not isinstance(segments, dict):
+            raise ProtocolError("summary segments must be an object")
+        segment = segments.get(segment_id)
+        if not isinstance(segment, dict):
+            segment = {"segment_id": segment_id}
+            segments[segment_id] = segment
+        return segment
+
+    def _merge_numeric_timing(self, segment: dict[str, object], timing: object) -> None:
+        if not isinstance(timing, dict):
+            return
+        for key, value in timing.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                segment[key] = float(value)
 
     def _segment_id_for_ue5_chunk(self, chunk_id: str) -> str:
         prefix, separator, suffix = chunk_id.rpartition("-")

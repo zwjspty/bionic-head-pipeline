@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic_ns
 import asyncio
 import shutil
 
@@ -48,6 +49,117 @@ class _FaceSegmentResult:
 
 
 @dataclass
+class _StreamSegmentTiming:
+    chunk_index: int
+    chunk_id: str
+    turn_id: str
+    generation_epoch: int
+    run_started_ns: int
+    tts_ready_ns: int
+    tts_audio_ready_ms: float
+    face_start_after_tts_ms: float | None = None
+    face_total_ms: float | None = None
+    ue5_first_frame_after_tts_ms: float | None = None
+    e2e_first_visible_face_ms: float | None = None
+    stale_dropped: bool = False
+
+    @property
+    def segment_id(self) -> str:
+        return self.chunk_id
+
+    def timing_payload(self) -> dict[str, float]:
+        payload: dict[str, float] = {"tts_audio_ready_ms": self.tts_audio_ready_ms}
+        optional = {
+            "face_start_after_tts_ms": self.face_start_after_tts_ms,
+            "face_total_ms": self.face_total_ms,
+            "ue5_first_frame_after_tts_ms": self.ue5_first_frame_after_tts_ms,
+            "e2e_first_visible_face_ms": self.e2e_first_visible_face_ms,
+        }
+        for key, value in optional.items():
+            if value is not None:
+                payload[key] = value
+        return payload
+
+    def snapshot(self) -> dict[str, object]:
+        item: dict[str, object] = {
+            "chunk_index": self.chunk_index,
+            "segment_index": self.chunk_index,
+            "chunk_id": self.chunk_id,
+            "segment_id": self.segment_id,
+            "turn_id": self.turn_id,
+            "generation_epoch": self.generation_epoch,
+            "tts_audio_ready_ms": self.tts_audio_ready_ms,
+        }
+        for key, value in self.timing_payload().items():
+            item[key] = value
+        if self.stale_dropped:
+            item["stale_dropped"] = True
+        return item
+
+
+@dataclass
+class _StreamTiming:
+    run_started_ns: int
+    segments: dict[str, _StreamSegmentTiming] = field(default_factory=dict)
+    old_turn_face_leak_count: int = 0
+    stale_face_drop_count: int = 0
+    _stale_counted_segments: set[str] = field(default_factory=set)
+
+    def elapsed_ms(self, at_ns: int | None = None) -> float:
+        if at_ns is None:
+            at_ns = monotonic_ns()
+        return _duration_ms(self.run_started_ns, at_ns)
+
+    def after_tts_ms(self, segment: _StreamSegmentTiming, at_ns: int | None = None) -> float:
+        if at_ns is None:
+            at_ns = monotonic_ns()
+        return _duration_ms(segment.tts_ready_ns, at_ns)
+
+    def add_segment(
+        self,
+        *,
+        chunk_index: int,
+        chunk_id: str,
+        turn: TurnHandle,
+        tts_ready_ns: int,
+    ) -> _StreamSegmentTiming:
+        segment = _StreamSegmentTiming(
+            chunk_index=chunk_index,
+            chunk_id=chunk_id,
+            turn_id=str(turn.turn_id),
+            generation_epoch=turn.generation_epoch,
+            run_started_ns=self.run_started_ns,
+            tts_ready_ns=tts_ready_ns,
+            tts_audio_ready_ms=self.elapsed_ms(tts_ready_ns),
+        )
+        self.segments[chunk_id] = segment
+        return segment
+
+    def record_stale_face_drop(self, chunk_id: str) -> None:
+        if chunk_id in self._stale_counted_segments:
+            return
+        self._stale_counted_segments.add(chunk_id)
+        self.stale_face_drop_count += 1
+        segment = self.segments.get(chunk_id)
+        if segment is not None:
+            segment.stale_dropped = True
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "segments": [
+                segment.snapshot()
+                for segment in sorted(self.segments.values(), key=lambda item: item.chunk_index)
+            ],
+            "old_turn_face_leak_count": self.old_turn_face_leak_count,
+            "stale_face_drop_count": self.stale_face_drop_count,
+        }
+
+
+def _duration_ms(start_ns: int, end_ns: int) -> float:
+    return round((end_ns - start_ns) / 1_000_000.0, 3)
+
+
+@dataclass
 class StreamOrchestrator:
     settings: AppSettings
     registry: AdapterRegistry
@@ -63,6 +175,7 @@ class StreamOrchestrator:
     ) -> None:
         factory = event_factory or EventFactory(session_id=turn.session_id)
         timeline = Timeline()
+        stream_timing = _StreamTiming(run_started_ns=monotonic_ns())
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
         face_tasks: list[asyncio.Task[_FaceSegmentResult]] = []
@@ -81,8 +194,13 @@ class StreamOrchestrator:
                 timeline.mark(name)
                 marks.add(name)
 
+        def timeline_snapshot() -> dict[str, object]:
+            snapshot = timeline.snapshot()
+            snapshot["stream"] = stream_timing.snapshot()
+            return snapshot
+
         async def schedule_segment(segment: str, chunk_index: int, llm: LLMResult) -> None:
-            chunk_id, audio = await self._process_audio_segment(
+            chunk_id, audio, segment_timing = await self._process_audio_segment(
                 segment,
                 chunk_index,
                 llm,
@@ -92,6 +210,7 @@ class StreamOrchestrator:
                 timeline,
                 mark_once,
                 artifacts,
+                stream_timing,
                 emit_json,
                 emit_binary_pair,
             )
@@ -107,6 +226,8 @@ class StreamOrchestrator:
                         factory,
                         timeline,
                         mark_once,
+                        stream_timing,
+                        segment_timing,
                         emit_json,
                     )
                 )
@@ -215,7 +336,7 @@ class StreamOrchestrator:
                 artifacts.face = latest_face_result.face
                 artifacts.ue5 = latest_face_result.ue5
             self._ensure_complete(artifacts)
-            snapshot = timeline.snapshot()
+            snapshot = timeline_snapshot()
             result = PipelineResult(
                 session_id=turn.session_id,
                 turn_id=turn.turn_id,
@@ -277,7 +398,7 @@ class StreamOrchestrator:
                 task.cancel()
             if face_tasks:
                 await asyncio.gather(*face_tasks, return_exceptions=True)
-            self.store.write_json(turn_dir / "timeline.json", timeline.snapshot())
+            self.store.write_json(turn_dir / "timeline.json", timeline_snapshot())
 
     async def _process_audio_segment(
         self,
@@ -290,9 +411,10 @@ class StreamOrchestrator:
         timeline: Timeline,
         mark_once: Callable[[str], None],
         artifacts: _StreamArtifacts,
+        stream_timing: _StreamTiming,
         emit_json: EmitJSON,
         emit_binary_pair: EmitBinaryPair,
-    ) -> tuple[str, AudioArtifact]:
+    ) -> tuple[str, AudioArtifact, _StreamSegmentTiming]:
         chunk_id = f"chunk-{chunk_index:04d}"
         await self._emit_server_json(
             turn,
@@ -306,6 +428,13 @@ class StreamOrchestrator:
             self._ensure_current(turn)
             audio = await self.registry.tts.synthesize(segment, llm.emotion, llm.intensity, context)
         artifacts.audio = audio
+        tts_ready_ns = monotonic_ns()
+        segment_timing = stream_timing.add_segment(
+            chunk_index=chunk_index,
+            chunk_id=chunk_id,
+            turn=turn,
+            tts_ready_ns=tts_ready_ns,
+        )
         mark_once("first_tts_ready")
         await self._emit_server_binary_pair(
             turn,
@@ -318,10 +447,13 @@ class StreamOrchestrator:
                 "sample_rate": audio.sample_rate,
                 "byte_length": audio.byte_length,
                 "duration_seconds": audio.duration_seconds,
+                "segment_id": segment_timing.segment_id,
+                "segment_index": chunk_index,
+                "timing": segment_timing.timing_payload(),
             },
             audio.path.read_bytes(),
         )
-        return chunk_id, audio
+        return chunk_id, audio, segment_timing
 
     async def _process_face_segment(
         self,
@@ -334,46 +466,78 @@ class StreamOrchestrator:
         factory: EventFactory,
         timeline: Timeline,
         mark_once: Callable[[str], None],
+        stream_timing: _StreamTiming,
+        segment_timing: _StreamSegmentTiming,
         emit_json: EmitJSON,
     ) -> _FaceSegmentResult:
-        with timeline.stage("audio2face", self.registry.audio2face.name):
-            self._ensure_current(turn)
-            face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
-        mark_once("first_face_ready")
-        await self._emit_server_json(
-            turn,
-            emit_json,
-            factory,
-            EventType.SERVER_FACE_FRAMES,
-            {
-                "chunk_id": chunk_id,
-                "fps": face.fps,
-                "frame_count": face.frame_count,
-                "frames": face.frames,
-            },
-        )
-
-        with timeline.stage("ue5", self.registry.ue5.name):
-            self._ensure_current(turn)
-            ue5 = await self.registry.ue5.format(face, context)
-        for chunk in chunk_ue5_frames(ue5, chunk_size=30, chunk_id=chunk_id):
+        try:
+            face_started_ns = monotonic_ns()
+            segment_timing.face_start_after_tts_ms = stream_timing.after_tts_ms(
+                segment_timing,
+                face_started_ns,
+            )
+            with timeline.stage("audio2face", self.registry.audio2face.name):
+                self._ensure_current(turn)
+                face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
+            segment_timing.face_total_ms = _duration_ms(face_started_ns, monotonic_ns())
+            mark_once("first_face_ready")
             await self._emit_server_json(
                 turn,
                 emit_json,
                 factory,
-                EventType.SERVER_UE5_FRAMES,
-                chunk,
+                EventType.SERVER_FACE_FRAMES,
+                {
+                    "chunk_id": chunk_id,
+                    "segment_id": segment_timing.segment_id,
+                    "segment_index": chunk_index,
+                    "fps": face.fps,
+                    "frame_count": face.frame_count,
+                    "timing": segment_timing.timing_payload(),
+                    "frames": face.frames,
+                },
             )
 
-        mark_once("first_segment_ready")
-        await self._emit_server_json(
-            turn,
-            emit_json,
-            factory,
-            EventType.SERVER_SEGMENT_READY,
-            {"chunk_id": chunk_id},
-        )
-        return _FaceSegmentResult(chunk_index=chunk_index, face=face, ue5=ue5)
+            with timeline.stage("ue5", self.registry.ue5.name):
+                self._ensure_current(turn)
+                ue5 = await self.registry.ue5.format(face, context)
+            for chunk in chunk_ue5_frames(ue5, chunk_size=30, chunk_id=chunk_id):
+                if segment_timing.ue5_first_frame_after_tts_ms is None:
+                    first_ue5_ns = monotonic_ns()
+                    segment_timing.ue5_first_frame_after_tts_ms = stream_timing.after_tts_ms(
+                        segment_timing,
+                        first_ue5_ns,
+                    )
+                    segment_timing.e2e_first_visible_face_ms = stream_timing.elapsed_ms(first_ue5_ns)
+                chunk["segment_id"] = segment_timing.segment_id
+                chunk["segment_index"] = chunk_index
+                chunk["turn_id"] = str(turn.turn_id)
+                chunk["generation_epoch"] = turn.generation_epoch
+                chunk["timing"] = segment_timing.timing_payload()
+                await self._emit_server_json(
+                    turn,
+                    emit_json,
+                    factory,
+                    EventType.SERVER_UE5_FRAMES,
+                    chunk,
+                )
+
+            mark_once("first_segment_ready")
+            await self._emit_server_json(
+                turn,
+                emit_json,
+                factory,
+                EventType.SERVER_SEGMENT_READY,
+                {
+                    "chunk_id": chunk_id,
+                    "segment_id": segment_timing.segment_id,
+                    "segment_index": chunk_index,
+                    "timing": segment_timing.timing_payload(),
+                },
+            )
+            return _FaceSegmentResult(chunk_index=chunk_index, face=face, ue5=ue5)
+        except asyncio.CancelledError:
+            stream_timing.record_stale_face_drop(chunk_id)
+            raise
 
     async def _emit_server_json(
         self,

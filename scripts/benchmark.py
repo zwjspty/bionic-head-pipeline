@@ -92,6 +92,30 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
     if playback_stop is not None:
         metrics["interrupt_to_playback_stop_ms"] = playback_stop
 
+    first_segment = _first_stream_segment(summary)
+    if first_segment is not None:
+        tts_audio_ready = _float_or_none(first_segment.get("tts_audio_event_ms"))
+        if tts_audio_ready is not None:
+            metrics["tts_audio_ready_ms"] = tts_audio_ready
+        face_total = _float_or_none(first_segment.get("face_total_ms"))
+        if face_total is not None:
+            metrics["face_total_ms"] = face_total
+        first_frame_after_tts = _float_or_none(first_segment.get("ue5_first_frame_after_tts_ms"))
+        if first_frame_after_tts is not None:
+            metrics["ue5_first_frame_after_tts_ms"] = first_frame_after_tts
+        first_visible = _float_or_none(first_segment.get("ue5_first_frame_ms"))
+        if first_visible is None:
+            first_visible = _float_or_none(first_segment.get("e2e_first_visible_face_ms"))
+        if first_visible is not None:
+            metrics["e2e_first_visible_face_ms"] = first_visible
+
+    for key in ("old_turn_face_leak_count", "stale_face_drop_count"):
+        value = _float_or_none(summary.get(key))
+        if value is None and key == "stale_face_drop_count":
+            value = _float_or_none(summary.get("stale_drop_count"))
+        if value is not None:
+            metrics[key] = value
+
     return metrics
 
 
@@ -145,6 +169,26 @@ def _float_or_none(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _first_stream_segment(summary: dict[str, object]) -> dict[str, object] | None:
+    segments = summary.get("segments")
+    if not isinstance(segments, dict):
+        return None
+    candidates = [segment for segment in segments.values() if isinstance(segment, dict)]
+    if not candidates:
+        return None
+
+    def sort_key(segment: dict[str, object]) -> tuple[float, str]:
+        order = _float_or_none(segment.get("tts_audio_event_ms"))
+        if order is None:
+            order = _float_or_none(segment.get("ue5_first_frame_ms"))
+        if order is None:
+            order = float("inf")
+        segment_id = str(segment.get("segment_id", segment.get("chunk_id", "")))
+        return order, segment_id
+
+    return min(candidates, key=sort_key)
 
 
 def _providers_from_timeline(timeline: object) -> dict[str, str]:
