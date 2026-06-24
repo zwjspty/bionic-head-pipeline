@@ -124,6 +124,23 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
         if reset is not None:
             metrics["face_stitch_reset_count"] = 1.0 if reset else 0.0
 
+    segments = _stream_segments(summary)
+    if segments:
+        applied_values = [
+            value
+            for value in (_bool_or_none(segment.get("face_stitch_applied")) for segment in segments)
+            if value is not None
+        ]
+        if applied_values:
+            metrics["face_stitch_applied_count"] = float(sum(1 for value in applied_values if value))
+        reset_values = [
+            value
+            for value in (_bool_or_none(segment.get("face_stitch_reset")) for segment in segments)
+            if value is not None
+        ]
+        if reset_values:
+            metrics["face_stitch_reset_count"] = float(sum(1 for value in reset_values if value))
+
     for key in ("old_turn_face_leak_count", "stale_face_drop_count"):
         value = _float_or_none(summary.get(key))
         if value is None and key == "stale_face_drop_count":
@@ -197,23 +214,28 @@ def _bool_or_none(value: object) -> bool | None:
 
 
 def _first_stream_segment(summary: dict[str, object]) -> dict[str, object] | None:
-    segments = summary.get("segments")
-    if not isinstance(segments, dict):
-        return None
-    candidates = [segment for segment in segments.values() if isinstance(segment, dict)]
+    candidates = _stream_segments(summary)
     if not candidates:
         return None
 
-    def sort_key(segment: dict[str, object]) -> tuple[float, str]:
-        order = _float_or_none(segment.get("tts_audio_event_ms"))
-        if order is None:
-            order = _float_or_none(segment.get("ue5_first_frame_ms"))
-        if order is None:
-            order = float("inf")
-        segment_id = str(segment.get("segment_id", segment.get("chunk_id", "")))
-        return order, segment_id
+    return min(candidates, key=_stream_segment_sort_key)
 
-    return min(candidates, key=sort_key)
+
+def _stream_segments(summary: dict[str, object]) -> list[dict[str, object]]:
+    segments = summary.get("segments")
+    if not isinstance(segments, dict):
+        return []
+    return [segment for segment in segments.values() if isinstance(segment, dict)]
+
+
+def _stream_segment_sort_key(segment: dict[str, object]) -> tuple[float, str]:
+    order = _float_or_none(segment.get("tts_audio_event_ms"))
+    if order is None:
+        order = _float_or_none(segment.get("ue5_first_frame_ms"))
+    if order is None:
+        order = float("inf")
+    segment_id = str(segment.get("segment_id", segment.get("chunk_id", "")))
+    return order, segment_id
 
 
 def _providers_from_timeline(timeline: object) -> dict[str, str]:

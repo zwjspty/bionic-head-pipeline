@@ -180,3 +180,31 @@ def test_stream_metrics_from_summary_extracts_face_stitch_metrics() -> None:
     assert metrics["face_boundary_delta_after"] == 0.1
     assert metrics["face_stitch_applied_count"] == 1.0
     assert metrics["face_stitch_reset_count"] == 0.0
+
+
+def test_stream_metrics_from_summary_counts_face_stitch_metrics_across_segments() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "segments": {
+                "chunk-0001": {
+                    "tts_audio_event_ms": 100.0,
+                    "face_stitch_applied": False,
+                    "face_stitch_reset": True,
+                },
+                "chunk-0002": {
+                    "tts_audio_event_ms": 200.0,
+                    "face_stitch_applied": True,
+                    "face_stitch_reset": False,
+                },
+                "chunk-0003": {
+                    "tts_audio_event_ms": 300.0,
+                    "face_stitch_applied": True,
+                    "face_stitch_reset": False,
+                },
+            }
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["face_stitch_applied_count"] == 2.0
+    assert metrics["face_stitch_reset_count"] == 1.0
