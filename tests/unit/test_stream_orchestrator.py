@@ -231,6 +231,13 @@ async def test_stream_records_face_segment_timing_and_ue5_payload_timing(stream_
     assert ue5.payload["segment_id"] == "chunk-0001"
     assert ue5.payload["segment_index"] == 1
     assert ue5.payload["timing"]["face_total_ms"] == first["face_total_ms"]
+    assert first["eye_continuity_enabled"] is True
+    assert first["eye_continuity_applied"] is False
+    assert first["eye_smooth_channel_count"] == 0.0
+    assert first["blink_enabled"] is False
+    assert first["blink_applied_count"] == 0.0
+    assert ue5.payload["timing"]["eye_continuity_enabled"] is True
+    assert ue5.payload["timing"]["eye_continuity_applied"] is False
 
 
 @pytest.mark.asyncio
@@ -280,6 +287,65 @@ async def test_stream_applies_face_stitching_to_second_segment_and_records_bound
         if envelope.type.value == "server.ue5.frames"
     ]
     assert any(payload["timing"].get("face_stitch_applied") is True for payload in ue5_payloads)
+
+
+@pytest.mark.asyncio
+async def test_stream_applies_eye_continuity_after_stitching_and_records_metrics(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.reply = "第一段内容已经足够。第二段内容也足够。"
+    settings.stream.sentence_min_chars = 4
+    settings.stream.sentence_max_chars = 12
+    settings.face_stitching.enabled = False
+    settings.eye_continuity.enabled = True
+    settings.eye_continuity.eye_smooth_channel_indices = [2, 5]
+    settings.eye_continuity.overlap_frames = 2
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=registry.llm,
+        tts=registry.tts,
+        audio2face=_ConstantSequenceAudio2FaceAdapter(),
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry)
+
+    await harness.run()
+
+    face_payloads = [
+        envelope.payload
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.face.frames"
+    ]
+    second_face = face_payloads[1]
+    second_timing = second_face["timing"]
+
+    assert second_timing["eye_continuity_applied"] is True
+    assert second_timing["eye_continuity_actual_overlap_frames"] == 2.0
+    assert second_timing["eye_boundary_delta_before"] == pytest.approx(1.0)
+    assert second_timing["eye_boundary_delta_after"] == pytest.approx(0.5)
+    assert second_timing["eye_boundary_delta_after"] <= second_timing["eye_boundary_delta_before"]
+    assert second_face["frames"][0][2] == pytest.approx(0.5)
+    assert second_face["frames"][0][5] == pytest.approx(0.5)
+    assert second_face["frames"][0][0] == pytest.approx(1.0)
+    assert second_face["frames"][0][4] == pytest.approx(1.0)
+
+    timeline_path = (
+        harness.store.runs
+        / str(harness.turn.session_id)
+        / str(harness.turn.turn_id)
+        / "timeline.json"
+    )
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    applied_segments = [
+        segment
+        for segment in timeline["stream"]["segments"]
+        if segment.get("eye_continuity_applied") is True
+    ]
+    assert applied_segments
+    assert timeline["stream"]["old_turn_face_leak_count"] == 0
 
 
 @pytest.mark.asyncio

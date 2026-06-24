@@ -190,6 +190,21 @@ def test_receiver_records_segment_face_timing_from_tts_and_ue5_events(tmp_path) 
                     "face_stitch_actual_overlap_frames": 5.0,
                     "face_boundary_delta_before": 0.4,
                     "face_boundary_delta_after": 0.1,
+                    "eye_continuity_enabled": True,
+                    "eye_continuity_applied": True,
+                    "eye_continuity_reset": False,
+                    "eye_smooth_channel_count": 2.0,
+                    "blink_channel_count": 1.0,
+                    "eye_continuity_overlap_frames": 6.0,
+                    "eye_continuity_actual_overlap_frames": 4.0,
+                    "eye_boundary_delta_before": 0.3,
+                    "eye_boundary_delta_after": 0.2,
+                    "blink_enabled": True,
+                    "blink_applied_count": 1.0,
+                    "blink_frame_count": 3.0,
+                    "blink_reset_count": 0.0,
+                    "eye_global_frame_start": 10.0,
+                    "eye_global_frame_end": 20.0,
                 },
                 "frames": [{"frame_index": 0, "time_seconds": 0.0, "weights": [0.0] * 52}],
             },
@@ -207,6 +222,16 @@ def test_receiver_records_segment_face_timing_from_tts_and_ue5_events(tmp_path) 
     assert segments["chunk-0001"]["face_stitch_reset"] is False
     assert segments["chunk-0001"]["face_stitch_actual_overlap_frames"] == 5.0
     assert segments["chunk-0001"]["face_boundary_delta_after"] == 0.1
+    assert segments["chunk-0001"]["eye_continuity_enabled"] is True
+    assert segments["chunk-0001"]["eye_continuity_applied"] is True
+    assert segments["chunk-0001"]["eye_continuity_reset"] is False
+    assert segments["chunk-0001"]["eye_smooth_channel_count"] == 2.0
+    assert segments["chunk-0001"]["eye_continuity_actual_overlap_frames"] == 4.0
+    assert segments["chunk-0001"]["eye_boundary_delta_after"] == 0.2
+    assert segments["chunk-0001"]["blink_enabled"] is True
+    assert segments["chunk-0001"]["blink_applied_count"] == 1.0
+    assert segments["chunk-0001"]["blink_frame_count"] == 3.0
+    assert segments["chunk-0001"]["blink_reset_count"] == 0.0
     assert receiver.summary["e2e_first_visible_face_ms"] == 480.0
 
 

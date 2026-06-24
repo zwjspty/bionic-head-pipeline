@@ -25,6 +25,7 @@ from bionic_head.domain.models import (
     TurnContext,
     UE5Payload,
 )
+from bionic_head.eye_continuity import EyeContinuityMetrics, EyeContinuityProcessor
 from bionic_head.face_stitcher import FaceSegmentStitcher, FaceStitchMetrics
 from bionic_head.protocol.events import EventEnvelope, EventFactory, EventType
 
@@ -69,6 +70,21 @@ class _StreamSegmentTiming:
     face_stitch_actual_overlap_frames: float | None = None
     face_boundary_delta_before: float | None = None
     face_boundary_delta_after: float | None = None
+    eye_continuity_enabled: bool | None = None
+    eye_continuity_applied: bool | None = None
+    eye_continuity_reset: bool | None = None
+    eye_smooth_channel_count: float | None = None
+    blink_channel_count: float | None = None
+    eye_continuity_overlap_frames: float | None = None
+    eye_continuity_actual_overlap_frames: float | None = None
+    eye_boundary_delta_before: float | None = None
+    eye_boundary_delta_after: float | None = None
+    blink_enabled: bool | None = None
+    blink_applied_count: float | None = None
+    blink_frame_count: float | None = None
+    blink_reset_count: float | None = None
+    eye_global_frame_start: float | None = None
+    eye_global_frame_end: float | None = None
     stale_dropped: bool = False
 
     @property
@@ -89,6 +105,21 @@ class _StreamSegmentTiming:
             "face_stitch_actual_overlap_frames": self.face_stitch_actual_overlap_frames,
             "face_boundary_delta_before": self.face_boundary_delta_before,
             "face_boundary_delta_after": self.face_boundary_delta_after,
+            "eye_continuity_enabled": self.eye_continuity_enabled,
+            "eye_continuity_applied": self.eye_continuity_applied,
+            "eye_continuity_reset": self.eye_continuity_reset,
+            "eye_smooth_channel_count": self.eye_smooth_channel_count,
+            "blink_channel_count": self.blink_channel_count,
+            "eye_continuity_overlap_frames": self.eye_continuity_overlap_frames,
+            "eye_continuity_actual_overlap_frames": self.eye_continuity_actual_overlap_frames,
+            "eye_boundary_delta_before": self.eye_boundary_delta_before,
+            "eye_boundary_delta_after": self.eye_boundary_delta_after,
+            "blink_enabled": self.blink_enabled,
+            "blink_applied_count": self.blink_applied_count,
+            "blink_frame_count": self.blink_frame_count,
+            "blink_reset_count": self.blink_reset_count,
+            "eye_global_frame_start": self.eye_global_frame_start,
+            "eye_global_frame_end": self.eye_global_frame_end,
         }
         for key, value in optional.items():
             if value is not None:
@@ -109,6 +140,29 @@ class _StreamSegmentTiming:
         if record_boundary_metrics:
             self.face_boundary_delta_before = metrics.boundary_delta_before
             self.face_boundary_delta_after = metrics.boundary_delta_after
+
+    def apply_eye_continuity_metrics(
+        self,
+        metrics: EyeContinuityMetrics,
+        *,
+        record_boundary_metrics: bool,
+    ) -> None:
+        self.eye_continuity_enabled = metrics.enabled
+        self.eye_continuity_applied = metrics.applied
+        self.eye_continuity_reset = metrics.reset
+        self.eye_smooth_channel_count = float(metrics.smooth_channel_count)
+        self.blink_channel_count = float(metrics.blink_channel_count)
+        self.eye_continuity_overlap_frames = float(metrics.overlap_frames)
+        self.eye_continuity_actual_overlap_frames = float(metrics.actual_overlap_frames)
+        self.blink_enabled = metrics.blink_enabled
+        self.blink_applied_count = float(metrics.blink_applied_count)
+        self.blink_frame_count = float(metrics.blink_frame_count)
+        self.blink_reset_count = float(metrics.blink_reset_count)
+        self.eye_global_frame_start = float(metrics.global_frame_start)
+        self.eye_global_frame_end = float(metrics.global_frame_end)
+        if record_boundary_metrics:
+            self.eye_boundary_delta_before = metrics.boundary_delta_before
+            self.eye_boundary_delta_after = metrics.boundary_delta_after
 
     def snapshot(self) -> dict[str, object]:
         item: dict[str, object] = {
@@ -210,6 +264,19 @@ class StreamOrchestrator:
             enabled=self.settings.face_stitching.enabled,
             overlap_frames=self.settings.face_stitching.overlap_frames,
         )
+        eye_continuity = EyeContinuityProcessor(
+            enabled=self.settings.eye_continuity.enabled,
+            eye_smooth_channel_indices=self.settings.eye_continuity.eye_smooth_channel_indices,
+            blink_enabled=self.settings.eye_continuity.blink_enabled,
+            blink_channel_indices=self.settings.eye_continuity.blink_channel_indices,
+            overlap_frames=self.settings.eye_continuity.overlap_frames,
+            blink_interval_min_sec=self.settings.eye_continuity.blink_interval_min_sec,
+            blink_interval_max_sec=self.settings.eye_continuity.blink_interval_max_sec,
+            blink_duration_frames=self.settings.eye_continuity.blink_duration_frames,
+            blink_strength=self.settings.eye_continuity.blink_strength,
+            seed=self.settings.eye_continuity.seed,
+            reset_blink_on_new_turn=self.settings.eye_continuity.reset_blink_on_new_turn,
+        )
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
         face_tasks: list[asyncio.Task[_FaceSegmentResult]] = []
@@ -263,6 +330,7 @@ class StreamOrchestrator:
                         stream_timing,
                         segment_timing,
                         face_stitcher,
+                        eye_continuity,
                         emit_json,
                     )
                 )
@@ -504,6 +572,7 @@ class StreamOrchestrator:
         stream_timing: _StreamTiming,
         segment_timing: _StreamSegmentTiming,
         face_stitcher: FaceSegmentStitcher,
+        eye_continuity: EyeContinuityProcessor,
         emit_json: EmitJSON,
     ) -> _FaceSegmentResult:
         try:
@@ -531,6 +600,25 @@ class StreamOrchestrator:
                     update={
                         "frames": stitched_frames,
                         "frame_count": len(stitched_frames),
+                    }
+                )
+            eye_frames, eye_metrics = eye_continuity.process(
+                face.frames,
+                session_id=str(turn.session_id),
+                turn_id=str(turn.turn_id),
+                generation_epoch=turn.generation_epoch,
+                segment_index=chunk_index,
+                fps=face.fps,
+            )
+            segment_timing.apply_eye_continuity_metrics(
+                eye_metrics,
+                record_boundary_metrics=self.settings.eye_continuity.record_boundary_metrics,
+            )
+            if eye_frames != face.frames:
+                face = face.model_copy(
+                    update={
+                        "frames": eye_frames,
+                        "frame_count": len(eye_frames),
                     }
                 )
             segment_timing.face_total_ms = _duration_ms(face_started_ns, monotonic_ns())

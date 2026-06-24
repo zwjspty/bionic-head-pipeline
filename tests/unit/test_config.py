@@ -19,6 +19,18 @@ def test_load_mock_settings() -> None:
     assert settings.face_stitching.overlap_frames == 8
     assert settings.face_stitching.reset_on_new_turn is True
     assert settings.face_stitching.record_boundary_metrics is True
+    assert settings.eye_continuity.enabled is True
+    assert settings.eye_continuity.eye_smooth_channel_indices == []
+    assert settings.eye_continuity.blink_enabled is False
+    assert settings.eye_continuity.blink_channel_indices == []
+    assert settings.eye_continuity.overlap_frames == 6
+    assert settings.eye_continuity.record_boundary_metrics is True
+    assert settings.eye_continuity.blink_interval_min_sec == pytest.approx(2.5)
+    assert settings.eye_continuity.blink_interval_max_sec == pytest.approx(6.0)
+    assert settings.eye_continuity.blink_duration_frames == 5
+    assert settings.eye_continuity.blink_strength == pytest.approx(1.0)
+    assert settings.eye_continuity.seed == 42
+    assert settings.eye_continuity.reset_blink_on_new_turn is False
 
 
 def test_load_real_example_settings() -> None:
@@ -198,3 +210,65 @@ def test_accepts_face_stitching_config() -> None:
     assert settings.face_stitching.overlap_frames == 5
     assert settings.face_stitching.reset_on_new_turn is True
     assert settings.face_stitching.record_boundary_metrics is False
+
+
+def test_accepts_eye_continuity_config() -> None:
+    settings = AppSettings.model_validate(
+        {
+            "eye_continuity": {
+                "enabled": True,
+                "eye_smooth_channel_indices": [1, 3],
+                "blink_enabled": True,
+                "blink_channel_indices": [4, 5],
+                "overlap_frames": 4,
+                "record_boundary_metrics": False,
+                "blink_interval_min_sec": 1.5,
+                "blink_interval_max_sec": 3.0,
+                "blink_duration_frames": 6,
+                "blink_strength": 0.8,
+                "seed": 123,
+                "reset_blink_on_new_turn": True,
+            }
+        }
+    )
+
+    assert settings.eye_continuity.enabled is True
+    assert settings.eye_continuity.eye_smooth_channel_indices == [1, 3]
+    assert settings.eye_continuity.blink_enabled is True
+    assert settings.eye_continuity.blink_channel_indices == [4, 5]
+    assert settings.eye_continuity.overlap_frames == 4
+    assert settings.eye_continuity.record_boundary_metrics is False
+    assert settings.eye_continuity.blink_interval_min_sec == pytest.approx(1.5)
+    assert settings.eye_continuity.blink_interval_max_sec == pytest.approx(3.0)
+    assert settings.eye_continuity.blink_duration_frames == 6
+    assert settings.eye_continuity.blink_strength == pytest.approx(0.8)
+    assert settings.eye_continuity.seed == 123
+    assert settings.eye_continuity.reset_blink_on_new_turn is True
+
+
+@pytest.mark.parametrize(
+    "bad_config",
+    [
+        {"eye_smooth_channel_indices": [-1]},
+        {"eye_smooth_channel_indices": [52]},
+        {"blink_channel_indices": [-1]},
+        {"blink_channel_indices": [52]},
+    ],
+)
+def test_rejects_eye_continuity_channel_indices_outside_morpheus_52_raw(
+    bad_config: dict[str, list[int]],
+) -> None:
+    with pytest.raises(ValidationError):
+        AppSettings.model_validate({"eye_continuity": bad_config})
+
+
+def test_rejects_eye_continuity_blink_interval_max_below_min() -> None:
+    with pytest.raises(ValidationError):
+        AppSettings.model_validate(
+            {
+                "eye_continuity": {
+                    "blink_interval_min_sec": 4.0,
+                    "blink_interval_max_sec": 3.0,
+                }
+            }
+        )

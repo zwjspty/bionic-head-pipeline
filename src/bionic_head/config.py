@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Literal
 
 from bionic_head.domain.models import Emotion
@@ -58,6 +58,37 @@ class FaceStitchingSettings(BaseModel):
     overlap_frames: int = Field(default=8, ge=0)
     reset_on_new_turn: bool = True
     record_boundary_metrics: bool = True
+
+
+class EyeContinuitySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    eye_smooth_channel_indices: list[int] = Field(default_factory=list)
+    blink_enabled: bool = False
+    blink_channel_indices: list[int] = Field(default_factory=list)
+    overlap_frames: int = Field(default=6, ge=0)
+    record_boundary_metrics: bool = True
+    blink_interval_min_sec: float = Field(default=2.5, gt=0)
+    blink_interval_max_sec: float = Field(default=6.0, gt=0)
+    blink_duration_frames: int = Field(default=5, ge=1)
+    blink_strength: float = Field(default=1.0, ge=0.0, le=1.0)
+    seed: int = 42
+    reset_blink_on_new_turn: bool = False
+
+    @field_validator("eye_smooth_channel_indices", "blink_channel_indices")
+    @classmethod
+    def _validate_morpheus_52_indices(cls, value: list[int]) -> list[int]:
+        for channel_index in value:
+            if channel_index < 0 or channel_index >= 52:
+                raise ValueError("eye continuity channel indices must be in [0, 51]")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_blink_interval_order(self) -> EyeContinuitySettings:
+        if self.blink_interval_max_sec < self.blink_interval_min_sec:
+            raise ValueError("blink_interval_max_sec must be greater than or equal to blink_interval_min_sec")
+        return self
 
 
 class AdapterSettings(BaseModel):
@@ -204,6 +235,7 @@ class AppSettings(BaseModel):
     retention: RetentionSettings = Field(default_factory=RetentionSettings)
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     face_stitching: FaceStitchingSettings = Field(default_factory=FaceStitchingSettings)
+    eye_continuity: EyeContinuitySettings = Field(default_factory=EyeContinuitySettings)
     adapters: AdaptersSettings = Field(default_factory=AdaptersSettings)
     mock: MockSettings = Field(default_factory=MockSettings)
     providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
