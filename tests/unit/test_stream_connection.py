@@ -13,7 +13,7 @@ from bionic_head.adapters.registry import AdapterRegistry
 from bionic_head.api.app import create_app
 from bionic_head.core.state import TurnHandle, TurnState, TurnStateMachine
 from bionic_head.protocol.connection import StreamConnection
-from bionic_head.protocol.events import EventEnvelope, EventFactory
+from bionic_head.protocol.events import EventEnvelope, EventFactory, EventType
 
 
 def test_client_cancel_emits_playback_stop_before_turn_cancelled(mock_settings, tmp_path) -> None:
@@ -174,6 +174,51 @@ async def test_turn_cancel_schedules_best_effort_provider_cancel_without_blockin
     tts_result = results[2]
     assert tts_result.provider == "tts"
     assert tts_result.error_code == "provider_failed"
+
+
+async def test_outbound_queue_prioritizes_playback_stop_and_drops_stale_normal_event(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    normal = connection._factory().server(
+        EventType.SERVER_UE5_FRAMES,
+        old_turn_id,
+        {"chunk_id": "chunk-0001", "frames": []},
+    )
+
+    await connection._send_json_direct(normal)
+    connection.generation_epoch += 1
+    playback_stop = connection._factory().server(
+        EventType.SERVER_PLAYBACK_STOP,
+        old_turn_id,
+        {},
+    )
+    await connection._send_json_direct(playback_stop)
+    await connection._yield_to_outbound_sender()
+
+    assert [event["type"] for event in connection.websocket.sent_json] == ["server.playback.stop"]
+    assert connection._outbound_stale_drop_count == 1
+
+
+async def test_outbound_queue_drops_stale_binary_pair_without_leaking_bytes(
+    mock_settings,
+    tmp_path,
+) -> None:
+    connection, old_turn_id = _thinking_connection(mock_settings, tmp_path)
+    tts_audio = connection._factory().server(
+        EventType.SERVER_TTS_AUDIO,
+        old_turn_id,
+        {"chunk_id": "chunk-0001", "byte_length": 4, "format": "wav", "sample_rate": 16000},
+    )
+
+    connection.generation_epoch += 1
+    await connection._send_binary_pair_direct(tts_audio, b"RIFF")
+    await connection._yield_to_outbound_sender()
+
+    assert connection.websocket.sent_json == []
+    assert connection.websocket.sent_bytes == []
+    assert connection._outbound_stale_drop_count == 1
 
 
 class _FakeWebSocket:
