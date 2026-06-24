@@ -153,3 +153,30 @@ def test_stream_metrics_from_summary_extracts_segment_face_timing_and_stale_coun
     assert metrics["e2e_first_visible_face_ms"] == 530.0
     assert metrics["old_turn_face_leak_count"] == 0.0
     assert metrics["stale_face_drop_count"] == 2.0
+
+
+def test_stream_metrics_from_summary_extracts_face_stitch_metrics() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "segments": {
+                "chunk-0001": {
+                    "tts_audio_event_ms": 100.0,
+                    "face_stitch_enabled": True,
+                    "face_stitch_applied": True,
+                    "face_stitch_reset": False,
+                    "face_stitch_overlap_frames": 8.0,
+                    "face_stitch_actual_overlap_frames": 5.0,
+                    "face_boundary_delta_before": 0.4,
+                    "face_boundary_delta_after": 0.1,
+                }
+            }
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["face_stitch_overlap_frames"] == 8.0
+    assert metrics["face_stitch_actual_overlap_frames"] == 5.0
+    assert metrics["face_boundary_delta_before"] == 0.4
+    assert metrics["face_boundary_delta_after"] == 0.1
+    assert metrics["face_stitch_applied_count"] == 1.0
+    assert metrics["face_stitch_reset_count"] == 0.0

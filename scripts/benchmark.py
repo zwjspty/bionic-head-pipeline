@@ -108,6 +108,21 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
             first_visible = _float_or_none(first_segment.get("e2e_first_visible_face_ms"))
         if first_visible is not None:
             metrics["e2e_first_visible_face_ms"] = first_visible
+        for key in (
+            "face_stitch_overlap_frames",
+            "face_stitch_actual_overlap_frames",
+            "face_boundary_delta_before",
+            "face_boundary_delta_after",
+        ):
+            value = _float_or_none(first_segment.get(key))
+            if value is not None:
+                metrics[key] = value
+        applied = _bool_or_none(first_segment.get("face_stitch_applied"))
+        if applied is not None:
+            metrics["face_stitch_applied_count"] = 1.0 if applied else 0.0
+        reset = _bool_or_none(first_segment.get("face_stitch_reset"))
+        if reset is not None:
+            metrics["face_stitch_reset_count"] = 1.0 if reset else 0.0
 
     for key in ("old_turn_face_leak_count", "stale_face_drop_count"):
         value = _float_or_none(summary.get(key))
@@ -166,8 +181,18 @@ def _read_stream_summary(output_dir: Path) -> dict[str, object]:
 
 
 def _float_or_none(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
     if isinstance(value, (int, float)):
         return float(value)
+    return None
+
+
+def _bool_or_none(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
     return None
 
 

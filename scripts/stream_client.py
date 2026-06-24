@@ -217,7 +217,9 @@ class ClientReceiver:
         if not isinstance(timing, dict):
             return
         for key, value in timing.items():
-            if isinstance(key, str) and isinstance(value, (int, float)):
+            if isinstance(key, str) and isinstance(value, bool):
+                segment[key] = value
+            elif isinstance(key, str) and isinstance(value, (int, float)):
                 segment[key] = float(value)
 
     def _segment_id_for_ue5_chunk(self, chunk_id: str) -> str:
