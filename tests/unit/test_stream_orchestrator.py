@@ -93,6 +93,42 @@ class _StalingAudio2FaceAdapter:
         await asyncio.sleep(0)
 
 
+class _ConstantSequenceAudio2FaceAdapter:
+    name = "constant-sequence-face"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def drive(
+        self,
+        audio: AudioArtifact,
+        emotion: Emotion,
+        intensity: float,
+        context: TurnContext,
+    ) -> FaceArtifact:
+        self.call_count += 1
+        value = float(self.call_count - 1)
+        frames = [[value] * 52 for _ in range(4)]
+        return FaceArtifact(
+            frames=frames,
+            fps=30,
+            channel_count=52,
+            frame_count=len(frames),
+        )
+
+    async def diagnostics(self) -> DiagnosticResult:
+        return DiagnosticResult(
+            adapter="audio2face",
+            provider=self.name,
+            available=True,
+            latency_ms=0.0,
+            message="test adapter ready",
+        )
+
+    async def cancel(self, turn_id) -> None:
+        await asyncio.sleep(0)
+
+
 class _DelayedTokenLLMAdapter:
     name = "delayed-token-llm"
 
@@ -195,6 +231,55 @@ async def test_stream_records_face_segment_timing_and_ue5_payload_timing(stream_
     assert ue5.payload["segment_id"] == "chunk-0001"
     assert ue5.payload["segment_index"] == 1
     assert ue5.payload["timing"]["face_total_ms"] == first["face_total_ms"]
+
+
+@pytest.mark.asyncio
+async def test_stream_applies_face_stitching_to_second_segment_and_records_boundary_metrics(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.reply = "第一段内容已经足够。第二段内容也足够。"
+    settings.stream.sentence_min_chars = 4
+    settings.stream.sentence_max_chars = 12
+    settings.face_stitching.enabled = True
+    settings.face_stitching.overlap_frames = 2
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=registry.llm,
+        tts=registry.tts,
+        audio2face=_ConstantSequenceAudio2FaceAdapter(),
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry)
+
+    await harness.run()
+
+    timeline_path = (
+        harness.store.runs
+        / str(harness.turn.session_id)
+        / str(harness.turn.turn_id)
+        / "timeline.json"
+    )
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    segments = timeline["stream"]["segments"]
+    stitched_segments = [
+        segment for segment in segments if segment.get("face_stitch_applied") is True
+    ]
+
+    assert stitched_segments
+    assert stitched_segments[0]["face_stitch_actual_overlap_frames"] == 2.0
+    assert stitched_segments[0]["face_boundary_delta_before"] == pytest.approx(1.0)
+    assert stitched_segments[0]["face_boundary_delta_after"] == pytest.approx(0.5)
+    assert timeline["stream"]["old_turn_face_leak_count"] == 0
+
+    ue5_payloads = [
+        envelope.payload
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.ue5.frames"
+    ]
+    assert any(payload["timing"].get("face_stitch_applied") is True for payload in ue5_payloads)
 
 
 @pytest.mark.asyncio

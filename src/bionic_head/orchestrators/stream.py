@@ -25,6 +25,7 @@ from bionic_head.domain.models import (
     TurnContext,
     UE5Payload,
 )
+from bionic_head.face_stitcher import FaceSegmentStitcher, FaceStitchMetrics
 from bionic_head.protocol.events import EventEnvelope, EventFactory, EventType
 
 
@@ -61,24 +62,53 @@ class _StreamSegmentTiming:
     face_total_ms: float | None = None
     ue5_first_frame_after_tts_ms: float | None = None
     e2e_first_visible_face_ms: float | None = None
+    face_stitch_enabled: bool | None = None
+    face_stitch_applied: bool | None = None
+    face_stitch_reset: bool | None = None
+    face_stitch_overlap_frames: float | None = None
+    face_stitch_actual_overlap_frames: float | None = None
+    face_boundary_delta_before: float | None = None
+    face_boundary_delta_after: float | None = None
     stale_dropped: bool = False
 
     @property
     def segment_id(self) -> str:
         return self.chunk_id
 
-    def timing_payload(self) -> dict[str, float]:
-        payload: dict[str, float] = {"tts_audio_ready_ms": self.tts_audio_ready_ms}
+    def timing_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"tts_audio_ready_ms": self.tts_audio_ready_ms}
         optional = {
             "face_start_after_tts_ms": self.face_start_after_tts_ms,
             "face_total_ms": self.face_total_ms,
             "ue5_first_frame_after_tts_ms": self.ue5_first_frame_after_tts_ms,
             "e2e_first_visible_face_ms": self.e2e_first_visible_face_ms,
+            "face_stitch_enabled": self.face_stitch_enabled,
+            "face_stitch_applied": self.face_stitch_applied,
+            "face_stitch_reset": self.face_stitch_reset,
+            "face_stitch_overlap_frames": self.face_stitch_overlap_frames,
+            "face_stitch_actual_overlap_frames": self.face_stitch_actual_overlap_frames,
+            "face_boundary_delta_before": self.face_boundary_delta_before,
+            "face_boundary_delta_after": self.face_boundary_delta_after,
         }
         for key, value in optional.items():
             if value is not None:
                 payload[key] = value
         return payload
+
+    def apply_stitch_metrics(
+        self,
+        metrics: FaceStitchMetrics,
+        *,
+        record_boundary_metrics: bool,
+    ) -> None:
+        self.face_stitch_enabled = metrics.enabled
+        self.face_stitch_applied = metrics.applied
+        self.face_stitch_reset = metrics.reset
+        self.face_stitch_overlap_frames = float(metrics.overlap_frames)
+        self.face_stitch_actual_overlap_frames = float(metrics.actual_overlap_frames)
+        if record_boundary_metrics:
+            self.face_boundary_delta_before = metrics.boundary_delta_before
+            self.face_boundary_delta_after = metrics.boundary_delta_after
 
     def snapshot(self) -> dict[str, object]:
         item: dict[str, object] = {
@@ -176,6 +206,10 @@ class StreamOrchestrator:
         factory = event_factory or EventFactory(session_id=turn.session_id)
         timeline = Timeline()
         stream_timing = _StreamTiming(run_started_ns=monotonic_ns())
+        face_stitcher = FaceSegmentStitcher(
+            enabled=self.settings.face_stitching.enabled,
+            overlap_frames=self.settings.face_stitching.overlap_frames,
+        )
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
         face_tasks: list[asyncio.Task[_FaceSegmentResult]] = []
@@ -228,6 +262,7 @@ class StreamOrchestrator:
                         mark_once,
                         stream_timing,
                         segment_timing,
+                        face_stitcher,
                         emit_json,
                     )
                 )
@@ -468,6 +503,7 @@ class StreamOrchestrator:
         mark_once: Callable[[str], None],
         stream_timing: _StreamTiming,
         segment_timing: _StreamSegmentTiming,
+        face_stitcher: FaceSegmentStitcher,
         emit_json: EmitJSON,
     ) -> _FaceSegmentResult:
         try:
@@ -479,6 +515,24 @@ class StreamOrchestrator:
             with timeline.stage("audio2face", self.registry.audio2face.name):
                 self._ensure_current(turn)
                 face = await self.registry.audio2face.drive(audio, llm.emotion, llm.intensity, context)
+            stitched_frames, stitch_metrics = face_stitcher.stitch(
+                face.frames,
+                session_id=str(turn.session_id),
+                turn_id=str(turn.turn_id),
+                generation_epoch=turn.generation_epoch,
+                segment_index=chunk_index,
+            )
+            segment_timing.apply_stitch_metrics(
+                stitch_metrics,
+                record_boundary_metrics=self.settings.face_stitching.record_boundary_metrics,
+            )
+            if stitched_frames != face.frames:
+                face = face.model_copy(
+                    update={
+                        "frames": stitched_frames,
+                        "frame_count": len(stitched_frames),
+                    }
+                )
             segment_timing.face_total_ms = _duration_ms(face_started_ns, monotonic_ns())
             mark_once("first_face_ready")
             await self._emit_server_json(

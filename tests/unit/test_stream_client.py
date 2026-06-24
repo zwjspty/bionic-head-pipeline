@@ -183,6 +183,13 @@ def test_receiver_records_segment_face_timing_from_tts_and_ue5_events(tmp_path) 
                     "face_total_ms": 375.0,
                     "ue5_first_frame_after_tts_ms": 380.0,
                     "e2e_first_visible_face_ms": 480.0,
+                    "face_stitch_enabled": True,
+                    "face_stitch_applied": True,
+                    "face_stitch_reset": False,
+                    "face_stitch_overlap_frames": 8.0,
+                    "face_stitch_actual_overlap_frames": 5.0,
+                    "face_boundary_delta_before": 0.4,
+                    "face_boundary_delta_after": 0.1,
                 },
                 "frames": [{"frame_index": 0, "time_seconds": 0.0, "weights": [0.0] * 52}],
             },
@@ -195,6 +202,11 @@ def test_receiver_records_segment_face_timing_from_tts_and_ue5_events(tmp_path) 
     assert segments["chunk-0001"]["ue5_first_frame_ms"] == 480.0
     assert segments["chunk-0001"]["ue5_first_frame_after_tts_ms"] == 380.0
     assert segments["chunk-0001"]["face_total_ms"] == 375.0
+    assert segments["chunk-0001"]["face_stitch_enabled"] is True
+    assert segments["chunk-0001"]["face_stitch_applied"] is True
+    assert segments["chunk-0001"]["face_stitch_reset"] is False
+    assert segments["chunk-0001"]["face_stitch_actual_overlap_frames"] == 5.0
+    assert segments["chunk-0001"]["face_boundary_delta_after"] == 0.1
     assert receiver.summary["e2e_first_visible_face_ms"] == 480.0
 
 
