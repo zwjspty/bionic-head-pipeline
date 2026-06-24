@@ -42,6 +42,10 @@ def test_real_stream_emotalk_sidecar_emits_ue5_timing(real_app, real_settings, c
     assert timing["ue5_first_frame_after_tts_ms"] >= timing["face_start_after_tts_ms"]
     assert "face_stitch_enabled" in timing
     assert "face_stitch_overlap_frames" in timing
+    assert "eye_continuity_enabled" in timing
+    assert "eye_continuity_applied" in timing
+    assert "blink_enabled" in timing
+    assert "blink_applied_count" in timing
     assert payload["frame_count"] > 0
     assert payload["channel_count"] == 52
 
