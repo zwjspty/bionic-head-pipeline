@@ -219,6 +219,62 @@ def test_response_success_round_trip_preserves_float32_frames() -> None:
     assert decoded.fps == 25
     assert decoded.channel_count == 52
     assert decoded.frames == frames.tobytes()
+    assert decoded.metrics is None
+
+
+def test_response_success_round_trip_preserves_optional_numeric_metrics() -> None:
+    frames = np.arange(52, dtype=np.float32).reshape(1, 52)
+    response = SidecarResponse.success(
+        session_id="sess",
+        turn_id="turn",
+        generation_epoch=7,
+        frame_count=1,
+        frames=frames.tobytes(),
+        fps=30,
+        channel_count=52,
+        metrics={
+            "worker_total_ms": 12.5,
+            "model_predict_ms": 10,
+        },
+    )
+
+    decoded = decode_response(encode_response(response))
+
+    assert decoded.metrics == {
+        "worker_total_ms": 12.5,
+        "model_predict_ms": 10.0,
+    }
+    assert decoded.to_header()["metrics"] == decoded.metrics
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        "not-a-dict",
+        {"worker_total_ms": "12.5"},
+        {"worker_total_ms": True},
+        {"worker_total_ms": -0.1},
+        {"worker_total_ms": float("nan")},
+        {"": 1.0},
+    ],
+)
+def test_decode_response_rejects_non_numeric_metrics(metrics: object) -> None:
+    frames = np.zeros((1, 52), dtype=np.float32)
+    header = {
+        "ok": True,
+        "protocol": PROTOCOL_VERSION,
+        "session_id": "sess",
+        "turn_id": "turn",
+        "generation_epoch": 1,
+        "frame_count": 1,
+        "channel_count": 52,
+        "dtype": "float32",
+        "fps": 30,
+        "metrics": metrics,
+    }
+
+    with pytest.raises(SidecarProtocolError):
+        decode_response(encode_message(header, frames.tobytes()))
 
 
 def test_failure_response_round_trip_has_empty_body() -> None:

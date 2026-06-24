@@ -68,6 +68,12 @@ def test_real_worker_smoke_two_requests_then_clean_exit() -> None:
     assert second.channel_count == 52
     assert first.frame_count > 0
     assert second.frame_count > 0
+    assert first.metrics is not None
+    assert second.metrics is not None
+    assert isinstance(first.metrics["worker_total_ms"], float)
+    assert isinstance(first.metrics["model_predict_ms"], float)
+    assert first.metrics["model_predict_ms"] <= first.metrics["worker_total_ms"]
+    assert second.metrics["model_predict_ms"] <= second.metrics["worker_total_ms"]
     first_frames = np.frombuffer(first.frames, dtype=np.float32).reshape(first.frame_count, 52)
     second_frames = np.frombuffer(second.frames, dtype=np.float32).reshape(second.frame_count, 52)
     assert first_frames.shape == (first.frame_count, 52)

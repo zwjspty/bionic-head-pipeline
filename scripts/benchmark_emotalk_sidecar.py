@@ -48,12 +48,14 @@ def build_summary(
     sidecar_warm_ms: list[float],
     old_shapes: list[list[int]],
     sidecar_shapes: list[list[int]],
+    sidecar_breakdown: list[dict[str, float]] | None = None,
 ) -> dict[str, object]:
     speedup = None
     if old_emotalk_ms and sidecar_warm_ms:
         warm_mean = statistics.fmean(sidecar_warm_ms)
         if warm_mean > 0:
             speedup = statistics.fmean(old_emotalk_ms) / warm_mean
+    rounded_breakdown = [_round_metrics(metrics) for metrics in (sidecar_breakdown or [])]
     return {
         "old_emotalk_ms": [round(value, 3) for value in old_emotalk_ms],
         "sidecar_cold_ms": None if sidecar_cold_ms is None else round(sidecar_cold_ms, 3),
@@ -61,6 +63,8 @@ def build_summary(
         "speedup_warm_vs_old": None if speedup is None else round(speedup, 3),
         "old_shapes": old_shapes,
         "sidecar_shapes": sidecar_shapes,
+        "sidecar_breakdown": rounded_breakdown,
+        "warm_breakdown": rounded_breakdown[1:],
     }
 
 
@@ -84,13 +88,14 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     old_shapes: list[list[int]] = []
     sidecar_ms: list[float] = []
     sidecar_shapes: list[list[int]] = []
+    sidecar_breakdown: list[dict[str, float]] = []
 
     if not args.skip_old and args.old_runs > 0:
         old_adapter = EmoTalkAudio2FaceAdapter.from_settings(
             settings.providers.emotalk,
             grace_seconds=settings.limits.subprocess_terminate_grace_seconds,
         )
-        old_ms, old_shapes = await _time_adapter(
+        old_ms, old_shapes, _old_breakdown = await _time_adapter(
             old_adapter,
             audio,
             run_root=run_root,
@@ -104,7 +109,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
             sidecar_adapter = EmoTalkSidecarAudio2FaceAdapter.from_settings(
                 settings.providers.emotalk_sidecar,
             )
-            sidecar_ms, sidecar_shapes = await _time_adapter(
+            sidecar_ms, sidecar_shapes, sidecar_breakdown = await _time_adapter(
                 sidecar_adapter,
                 audio,
                 run_root=run_root,
@@ -121,6 +126,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         sidecar_warm_ms=sidecar_ms[1:],
         old_shapes=old_shapes,
         sidecar_shapes=sidecar_shapes,
+        sidecar_breakdown=sidecar_breakdown,
     )
     return {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -148,9 +154,10 @@ async def _time_adapter(
     run_root: Path,
     label: str,
     runs: int,
-) -> tuple[list[float], list[list[int]]]:
+) -> tuple[list[float], list[list[int]], list[dict[str, float]]]:
     durations: list[float] = []
     shapes: list[list[int]] = []
+    breakdowns: list[dict[str, float]] = []
     for index in range(runs):
         context = TurnContext(
             session_id=uuid4(),
@@ -163,7 +170,31 @@ async def _time_adapter(
         face = await adapter.drive(audio, Emotion.NEUTRAL, 0.5, context)
         durations.append((perf_counter() - started) * 1000.0)
         shapes.append([face.frame_count, face.channel_count])
-    return durations, shapes
+        breakdowns.append(_load_face_metrics(face.auxiliary_paths))
+    return durations, shapes, breakdowns
+
+
+def _load_face_metrics(paths: list[Path]) -> dict[str, float]:
+    for path in paths:
+        if path.name != "meta.json" or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        metrics = payload.get("metrics")
+        if not isinstance(metrics, dict):
+            return {}
+        numeric_metrics: dict[str, float] = {}
+        for key, value in metrics.items():
+            if isinstance(key, str) and isinstance(value, (int, float)) and not isinstance(value, bool):
+                numeric_metrics[key] = float(value)
+        return numeric_metrics
+    return {}
+
+
+def _round_metrics(metrics: dict[str, float]) -> dict[str, float]:
+    return {key: round(value, 3) for key, value in metrics.items()}
 
 
 def _audio_artifact_from_wav(path: Path) -> AudioArtifact:
@@ -198,6 +229,7 @@ def main() -> None:
         sidecar_warm_ms=report["sidecar_warm_ms"],  # type: ignore[arg-type]
         old_shapes=report["old_shapes"],  # type: ignore[arg-type]
         sidecar_shapes=report["sidecar_shapes"],  # type: ignore[arg-type]
+        sidecar_breakdown=report["sidecar_breakdown"],  # type: ignore[arg-type]
     ), ensure_ascii=False, indent=2))
 
 

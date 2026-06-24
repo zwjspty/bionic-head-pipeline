@@ -127,6 +127,38 @@ def test_handle_request_payload_with_fake_runner_returns_valid_success_response(
     assert calls[0][1:] == (7, 2)
 
 
+def test_handle_request_payload_success_response_includes_numeric_metrics() -> None:
+    from bionic_head.emotalk_sidecar_worker import handle_request_payload
+
+    def fake_runner(audio: np.ndarray, *, level: int, person: int) -> np.ndarray:
+        del audio, level, person
+        return np.arange(156, dtype=np.float32).reshape(3, 52)
+
+    response_payload = handle_request_payload(
+        encode_request(_valid_request(num_samples=4, fps=30)),
+        fake_runner,
+        level=1,
+        person=0,
+    )
+    response = decode_response(response_payload)
+
+    assert response.ok is True
+    assert response.metrics is not None
+    for key in [
+        "worker_total_ms",
+        "request_validate_ms",
+        "pcm_parse_ms",
+        "waveform_prepare_ms",
+        "model_predict_ms",
+        "postprocess_ms",
+        "response_encode_ms",
+    ]:
+        assert key in response.metrics
+        assert isinstance(response.metrics[key], float)
+        assert response.metrics[key] >= 0.0
+    assert response.metrics["model_predict_ms"] <= response.metrics["worker_total_ms"]
+
+
 def test_handle_request_payload_rejects_non_30fps_request_without_calling_runner() -> None:
     from bionic_head.emotalk_sidecar_worker import handle_request_payload
 

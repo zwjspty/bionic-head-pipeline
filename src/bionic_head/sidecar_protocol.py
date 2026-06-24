@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import struct
 from dataclasses import dataclass
 from typing import Any, BinaryIO
@@ -29,6 +30,27 @@ def _validate_str(value: object, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise SidecarProtocolError(f"{name} must be a non-empty string")
     return value
+
+
+def _validate_metrics(value: object) -> dict[str, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SidecarProtocolError("metrics must be an object when provided")
+
+    metrics: dict[str, float] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str) or not raw_key:
+            raise SidecarProtocolError("metrics keys must be non-empty strings")
+        if (
+            not isinstance(raw_value, (int, float))
+            or isinstance(raw_value, bool)
+            or not math.isfinite(float(raw_value))
+            or float(raw_value) < 0
+        ):
+            raise SidecarProtocolError(f"metrics.{raw_key} must be a non-negative finite number")
+        metrics[raw_key] = float(raw_value)
+    return metrics
 
 
 @dataclass
@@ -70,6 +92,7 @@ class SidecarResponse:
     frames: bytes
     error_code: str | None = None
     error_message: str | None = None
+    metrics: dict[str, float] | None = None
 
     @classmethod
     def success(
@@ -82,6 +105,7 @@ class SidecarResponse:
         *,
         fps: int = 30,
         channel_count: int = 52,
+        metrics: dict[str, float] | None = None,
     ) -> "SidecarResponse":
         return cls(
             ok=True,
@@ -95,6 +119,7 @@ class SidecarResponse:
             frames=frames,
             error_code=None,
             error_message=None,
+            metrics=metrics,
         )
 
     @classmethod
@@ -119,11 +144,12 @@ class SidecarResponse:
             frames=b"",
             error_code=error_code,
             error_message=error_message,
+            metrics=None,
         )
 
     def to_header(self) -> dict[str, object]:
         if self.ok:
-            return {
+            header: dict[str, object] = {
                 "ok": True,
                 "protocol": PROTOCOL_VERSION,
                 "session_id": self.session_id,
@@ -134,6 +160,10 @@ class SidecarResponse:
                 "dtype": self.dtype,
                 "fps": self.fps,
             }
+            metrics = _validate_metrics(self.metrics)
+            if metrics is not None:
+                header["metrics"] = metrics
+            return header
         return {
             "ok": False,
             "protocol": PROTOCOL_VERSION,
@@ -270,6 +300,7 @@ def decode_response(payload: bytes) -> SidecarResponse:
             frames=frames,
             error_code=None,
             error_message=None,
+            metrics=_validate_metrics(header.get("metrics")),
         )
 
     error_code = header.get("error_code")
@@ -295,6 +326,7 @@ def decode_response(payload: bytes) -> SidecarResponse:
         frames=frames,
         error_code=error_code,
         error_message=error_message,
+        metrics=None,
     )
 
 

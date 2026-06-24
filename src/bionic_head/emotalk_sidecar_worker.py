@@ -8,6 +8,7 @@ import struct
 import sys
 import traceback
 from pathlib import Path
+from time import perf_counter_ns
 from typing import Callable, TextIO
 
 import numpy as np
@@ -30,6 +31,10 @@ DEFAULT_CHANNEL_COUNT = 52
 SUPPORTED_FPS = 30
 
 Runner = Callable[[np.ndarray], object]
+
+
+def _ms_since(start_ns: int) -> float:
+    return (perf_counter_ns() - start_ns) / 1_000_000.0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -158,13 +163,33 @@ def handle_request_payload(
     person: int,
     stderr: TextIO | None = None,
 ) -> bytes:
+    total_start_ns = perf_counter_ns()
+    metrics: dict[str, float] = {}
     request: SidecarRequest | None = None
     try:
+        validate_start_ns = perf_counter_ns()
         request = decode_request(payload)
         _validate_supported_fps(request.fps)
-        waveform = pcm16_bytes_to_float32_waveform(request.audio)
+        metrics["request_validate_ms"] = _ms_since(validate_start_ns)
+
+        pcm_start_ns = perf_counter_ns()
+        pcm_samples = np.frombuffer(request.audio, dtype=np.int16)
+        metrics["pcm_parse_ms"] = _ms_since(pcm_start_ns)
+
+        waveform_start_ns = perf_counter_ns()
+        waveform = pcm_samples.astype(np.float32) / 32768.0
+        metrics["waveform_prepare_ms"] = _ms_since(waveform_start_ns)
+
+        predict_start_ns = perf_counter_ns()
         prediction = runner(waveform, level=level, person=person)
+        metrics["model_predict_ms"] = _ms_since(predict_start_ns)
+
+        postprocess_start_ns = perf_counter_ns()
         frames = _coerce_frames(prediction)
+        metrics["postprocess_ms"] = _ms_since(postprocess_start_ns)
+        metrics["response_encode_ms"] = 0.0
+        metrics["worker_total_ms"] = _ms_since(total_start_ns)
+
         response = SidecarResponse.success(
             session_id=request.session_id,
             turn_id=request.turn_id,
@@ -173,7 +198,13 @@ def handle_request_payload(
             frames=frames.tobytes(),
             fps=request.fps,
             channel_count=DEFAULT_CHANNEL_COUNT,
+            metrics=metrics,
         )
+
+        encode_start_ns = perf_counter_ns()
+        encode_response(response)
+        metrics["response_encode_ms"] = _ms_since(encode_start_ns)
+        metrics["worker_total_ms"] = _ms_since(total_start_ns)
         return encode_response(response)
     except SidecarProtocolError as exc:
         if request is None:

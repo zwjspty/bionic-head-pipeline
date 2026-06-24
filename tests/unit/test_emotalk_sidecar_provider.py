@@ -80,6 +80,95 @@ async def test_provider_starts_fake_sidecar_and_returns_n_by_52(
 
 
 @pytest.mark.asyncio
+async def test_provider_writes_provider_metrics_when_sidecar_omits_worker_metrics(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    adapter = _adapter([sys.executable, "-m", "bionic_head.emotalk_fake_sidecar"])
+
+    face = await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
+
+    meta = json.loads((face.path.parent / "meta.json").read_text(encoding="utf-8"))
+    metrics = meta["metrics"]
+    for key in [
+        "provider_total_ms",
+        "sidecar_start_ms",
+        "wav_decode_ms",
+        "resample_ms",
+        "pcm_prepare_ms",
+        "request_encode_ms",
+        "ipc_write_ms",
+        "ipc_read_ms",
+        "response_decode_ms",
+        "frames_validate_ms",
+        "npy_write_ms",
+        "meta_write_ms",
+    ]:
+        assert key in metrics
+        assert isinstance(metrics[key], (int, float))
+        assert not isinstance(metrics[key], bool)
+        assert metrics[key] >= 0
+    assert "worker_total_ms" not in metrics
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_merges_sidecar_response_metrics_into_meta(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    adapter = _adapter(
+        _sidecar_script(
+            tmp_path / "metrics_sidecar.py",
+            """
+import sys
+
+import numpy as np
+
+from bionic_head.sidecar_protocol import (
+    SidecarResponse,
+    decode_request,
+    encode_message,
+    encode_response,
+    read_message,
+)
+
+header, body = read_message(sys.stdin.buffer)
+request = decode_request(encode_message(header, body))
+frames = np.zeros((2, 52), dtype=np.float32)
+response = SidecarResponse.success(
+    session_id=request.session_id,
+    turn_id=request.turn_id,
+    generation_epoch=request.generation_epoch,
+    frame_count=2,
+    frames=frames.tobytes(),
+    fps=request.fps,
+    metrics={
+        "worker_total_ms": 12.0,
+        "model_predict_ms": 10.0,
+    },
+)
+sys.stdout.buffer.write(encode_response(response))
+sys.stdout.buffer.flush()
+""",
+        )
+    )
+
+    face = await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
+
+    meta = json.loads((face.path.parent / "meta.json").read_text(encoding="utf-8"))
+    metrics = meta["metrics"]
+    assert metrics["provider_total_ms"] >= 0
+    assert metrics["worker_total_ms"] == 12.0
+    assert metrics["model_predict_ms"] == 10.0
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_provider_preserves_session_turn_generation_epoch(
     tmp_path: Path,
     turn_context,

@@ -25,6 +25,10 @@ from bionic_head.sidecar_protocol import (
 )
 
 
+def _ms_since(start_ns: int) -> float:
+    return (time.perf_counter_ns() - start_ns) / 1_000_000.0
+
+
 class SidecarProcessError(PipelineException):
     def __init__(self, message: str, *, retryable: bool = True) -> None:
         super().__init__(
@@ -105,7 +109,9 @@ class EmoTalkSidecarAudio2FaceAdapter:
         del emotion, intensity
         context.cancellation.raise_if_cancelled()
 
-        request = self._build_request(audio.path, context)
+        total_start_ns = time.perf_counter_ns()
+        metrics: dict[str, float] = {}
+        request = self._build_request(audio.path, context, metrics)
 
         async with self._request_lock:
             self.call_count += 1
@@ -116,7 +122,7 @@ class EmoTalkSidecarAudio2FaceAdapter:
 
             try:
                 response = await asyncio.wait_for(
-                    self._transact(request),
+                    self._transact(request, metrics),
                     timeout=self.timeout_seconds,
                 )
             except asyncio.TimeoutError as exc:
@@ -131,7 +137,7 @@ class EmoTalkSidecarAudio2FaceAdapter:
                 ) from exc
 
         context.cancellation.raise_if_cancelled()
-        return self._write_face_artifact(output_dir, request, response)
+        return self._write_face_artifact(output_dir, request, response, metrics, total_start_ns)
 
     async def diagnostics(self) -> DiagnosticResult:
         started = time.perf_counter()
@@ -199,8 +205,13 @@ class EmoTalkSidecarAudio2FaceAdapter:
                     stderr_task.cancel()
                     await asyncio.gather(stderr_task, return_exceptions=True)
 
-    def _build_request(self, audio_path: Path, context: TurnContext) -> SidecarRequest:
-        pcm = self._wav_to_pcm16(audio_path)
+    def _build_request(
+        self,
+        audio_path: Path,
+        context: TurnContext,
+        metrics: dict[str, float] | None = None,
+    ) -> SidecarRequest:
+        pcm = self._wav_to_pcm16(audio_path, metrics)
         return SidecarRequest(
             session_id=str(context.session_id),
             turn_id=str(context.turn_id),
@@ -213,7 +224,8 @@ class EmoTalkSidecarAudio2FaceAdapter:
             audio=pcm,
         )
 
-    def _wav_to_pcm16(self, path: Path) -> bytes:
+    def _wav_to_pcm16(self, path: Path, metrics: dict[str, float] | None = None) -> bytes:
+        decode_start_ns = time.perf_counter_ns()
         try:
             with wave.open(str(path), "rb") as wav:
                 channels = wav.getnchannels()
@@ -223,6 +235,9 @@ class EmoTalkSidecarAudio2FaceAdapter:
                 frames = wav.readframes(frame_count)
         except (wave.Error, OSError, EOFError) as exc:
             raise self._output_invalid("Invalid WAV audio for EmoTalk sidecar") from exc
+        if metrics is not None:
+            metrics["wav_decode_ms"] = _ms_since(decode_start_ns)
+            metrics["resample_ms"] = 0.0
 
         if sample_width != 2:
             raise self._output_invalid("WAV must be signed 16-bit PCM for EmoTalk sidecar")
@@ -231,19 +246,27 @@ class EmoTalkSidecarAudio2FaceAdapter:
         if len(frames) % (sample_width * channels) != 0:
             raise self._output_invalid("WAV frame data is not aligned to sample width")
 
-        samples = np.frombuffer(frames, dtype=np.int16)
-        if samples.size == 0:
-            raise self._output_invalid("WAV must contain samples")
-        if channels > 1:
-            samples = samples.reshape(-1, channels).astype(np.float64).mean(axis=1)
-        else:
-            samples = samples.astype(np.float64)
-        if sample_rate != self.sample_rate:
-            samples = self._resample(samples, sample_rate, self.sample_rate)
-        samples = np.clip(np.rint(samples), -32768, 32767).astype(np.int16)
-        if samples.size == 0:
-            raise self._output_invalid("Resampled WAV must contain samples")
-        return samples.tobytes()
+        prepare_start_ns = time.perf_counter_ns()
+        try:
+            samples = np.frombuffer(frames, dtype=np.int16)
+            if samples.size == 0:
+                raise self._output_invalid("WAV must contain samples")
+            if channels > 1:
+                samples = samples.reshape(-1, channels).astype(np.float64).mean(axis=1)
+            else:
+                samples = samples.astype(np.float64)
+            if sample_rate != self.sample_rate:
+                resample_start_ns = time.perf_counter_ns()
+                samples = self._resample(samples, sample_rate, self.sample_rate)
+                if metrics is not None:
+                    metrics["resample_ms"] = _ms_since(resample_start_ns)
+            samples = np.clip(np.rint(samples), -32768, 32767).astype(np.int16)
+            if samples.size == 0:
+                raise self._output_invalid("Resampled WAV must contain samples")
+            return samples.tobytes()
+        finally:
+            if metrics is not None:
+                metrics["pcm_prepare_ms"] = _ms_since(prepare_start_ns)
 
     def _resample(
         self,
@@ -258,15 +281,21 @@ class EmoTalkSidecarAudio2FaceAdapter:
         target_positions = np.linspace(0.0, samples.size - 1, num=target_count, dtype=np.float64)
         return np.interp(target_positions, source_positions, samples)
 
-    async def _transact(self, request: SidecarRequest):
-        process = await self._ensure_process(request)
+    async def _transact(self, request: SidecarRequest, metrics: dict[str, float] | None = None):
+        process = await self._ensure_process(request, metrics)
         if process.stdin is None or process.stdout is None:
             raise self._process_unavailable("EmoTalk sidecar stdio is unavailable", process)
 
+        encode_start_ns = time.perf_counter_ns()
         payload = encode_request(request)
+        if metrics is not None:
+            metrics["request_encode_ms"] = _ms_since(encode_start_ns)
         try:
+            write_start_ns = time.perf_counter_ns()
             process.stdin.write(payload)
             await process.stdin.drain()
+            if metrics is not None:
+                metrics["ipc_write_ms"] = _ms_since(write_start_ns)
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise self._process_unavailable(
                 "EmoTalk sidecar stdin closed unexpectedly",
@@ -274,25 +303,42 @@ class EmoTalkSidecarAudio2FaceAdapter:
             ) from exc
 
         try:
+            read_start_ns = time.perf_counter_ns()
             response_payload = await self._read_response_payload(process)
+            if metrics is not None:
+                metrics["ipc_read_ms"] = _ms_since(read_start_ns)
             try:
+                decode_start_ns = time.perf_counter_ns()
                 response = decode_response(response_payload)
+                if metrics is not None:
+                    metrics["response_decode_ms"] = _ms_since(decode_start_ns)
             except SidecarProtocolError as exc:
                 raise self._output_invalid(f"Invalid EmoTalk sidecar response: {exc}") from exc
 
+            validate_start_ns = time.perf_counter_ns()
             self._validate_response(request, response, process)
+            if metrics is not None:
+                metrics["frames_validate_ms"] = _ms_since(validate_start_ns)
             return response
         except PipelineException as exc:
             if exc.code is ErrorCode.OUTPUT_VALIDATION_FAILED:
                 await self.close()
             raise
 
-    async def _ensure_process(self, request: SidecarRequest) -> asyncio.subprocess.Process:
+    async def _ensure_process(
+        self,
+        request: SidecarRequest,
+        metrics: dict[str, float] | None = None,
+    ) -> asyncio.subprocess.Process:
         if self._process is not None and self._process.returncode is None:
+            if metrics is not None:
+                metrics.setdefault("sidecar_start_ms", 0.0)
             return self._process
 
         async with self._process_lock:
             if self._process is not None and self._process.returncode is None:
+                if metrics is not None:
+                    metrics.setdefault("sidecar_start_ms", 0.0)
                 return self._process
 
             if not self.sidecar_command:
@@ -302,6 +348,7 @@ class EmoTalkSidecarAudio2FaceAdapter:
                 raise self._process_start_failed(request, unsupported, ValueError(unsupported))
 
             try:
+                start_ns = time.perf_counter_ns()
                 process = await asyncio.create_subprocess_exec(
                     *self.sidecar_command,
                     stdin=asyncio.subprocess.PIPE,
@@ -310,6 +357,8 @@ class EmoTalkSidecarAudio2FaceAdapter:
                     cwd=self.sidecar_cwd,
                     env=self._subprocess_env(),
                 )
+                if metrics is not None:
+                    metrics["sidecar_start_ms"] = _ms_since(start_ns)
             except (FileNotFoundError, OSError) as exc:
                 raise self._process_start_failed(request, "EmoTalk sidecar failed to start", exc) from exc
             self._process = process
@@ -442,40 +491,74 @@ class EmoTalkSidecarAudio2FaceAdapter:
         if not np.isfinite(frames).all():
             raise self._output_invalid("EmoTalk sidecar frames must be finite")
 
-    def _write_face_artifact(self, output_dir: Path, request: SidecarRequest, response) -> FaceArtifact:
+    def _write_face_artifact(
+        self,
+        output_dir: Path,
+        request: SidecarRequest,
+        response,
+        metrics: dict[str, float],
+        total_start_ns: int,
+    ) -> FaceArtifact:
         frames = np.frombuffer(response.frames, dtype=np.float32).copy().reshape(
             response.frame_count,
             self.channel_count,
         )
         npy_path = output_dir / self.output_npy_name
+        npy_start_ns = time.perf_counter_ns()
         np.save(npy_path, frames, allow_pickle=False)
+        metrics["npy_write_ms"] = _ms_since(npy_start_ns)
 
         meta_path = output_dir / "meta.json"
+        worker_metrics = response.metrics or {}
+        combined_metrics = {**worker_metrics, **metrics}
+        combined_metrics.setdefault("sidecar_start_ms", 0.0)
+        combined_metrics.setdefault("wav_decode_ms", 0.0)
+        combined_metrics.setdefault("resample_ms", 0.0)
+        combined_metrics.setdefault("pcm_prepare_ms", 0.0)
+        combined_metrics.setdefault("request_encode_ms", 0.0)
+        combined_metrics.setdefault("ipc_write_ms", 0.0)
+        combined_metrics.setdefault("ipc_read_ms", 0.0)
+        combined_metrics.setdefault("response_decode_ms", 0.0)
+        combined_metrics.setdefault("frames_validate_ms", 0.0)
+        combined_metrics.setdefault("npy_write_ms", 0.0)
+        combined_metrics.setdefault("meta_write_ms", 0.0)
+        combined_metrics["provider_total_ms"] = _ms_since(total_start_ns)
+
+        meta_payload = {
+            "provider": self.name,
+            "sidecar_pid": self.process_pid,
+            "request": {
+                "session_id": request.session_id,
+                "turn_id": request.turn_id,
+                "generation_epoch": request.generation_epoch,
+                "sample_rate": request.sample_rate,
+                "num_samples": request.num_samples,
+                "fps": request.fps,
+            },
+            "response": {
+                "session_id": response.session_id,
+                "turn_id": response.turn_id,
+                "generation_epoch": response.generation_epoch,
+                "frame_count": response.frame_count,
+                "channel_count": response.channel_count,
+                "fps": response.fps,
+            },
+            "metrics": combined_metrics,
+        }
+        meta_start_ns = time.perf_counter_ns()
         meta_path.write_text(
             json.dumps(
-                {
-                    "provider": self.name,
-                    "sidecar_pid": self.process_pid,
-                    "request": {
-                        "session_id": request.session_id,
-                        "turn_id": request.turn_id,
-                        "generation_epoch": request.generation_epoch,
-                        "sample_rate": request.sample_rate,
-                        "num_samples": request.num_samples,
-                        "fps": request.fps,
-                    },
-                    "response": {
-                        "session_id": response.session_id,
-                        "turn_id": response.turn_id,
-                        "generation_epoch": response.generation_epoch,
-                        "frame_count": response.frame_count,
-                        "channel_count": response.channel_count,
-                        "fps": response.fps,
-                    },
-                },
+                meta_payload,
                 ensure_ascii=False,
                 indent=2,
             ),
+            encoding="utf-8",
+        )
+        combined_metrics["meta_write_ms"] = _ms_since(meta_start_ns)
+        combined_metrics["provider_total_ms"] = _ms_since(total_start_ns)
+        meta_payload["metrics"] = combined_metrics
+        meta_path.write_text(
+            json.dumps(meta_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 

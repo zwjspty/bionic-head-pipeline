@@ -30,6 +30,11 @@ def test_build_summary_compares_old_cold_and_warm_sidecar() -> None:
         sidecar_warm_ms=[100.0, 200.0],
         old_shapes=[[111, 52], [99, 52]],
         sidecar_shapes=[[30, 52], [30, 52], [30, 52]],
+        sidecar_breakdown=[
+            {"provider_total_ms": 7000.0, "worker_total_ms": 6900.0},
+            {"provider_total_ms": 100.0, "worker_total_ms": 90.0},
+            {"provider_total_ms": 200.0, "worker_total_ms": 180.0},
+        ],
     )
 
     assert summary["old_emotalk_ms"] == [8000.0, 16000.0]
@@ -38,6 +43,15 @@ def test_build_summary_compares_old_cold_and_warm_sidecar() -> None:
     assert summary["speedup_warm_vs_old"] == 80.0
     assert summary["old_shapes"] == [[111, 52], [99, 52]]
     assert summary["sidecar_shapes"] == [[30, 52], [30, 52], [30, 52]]
+    assert summary["sidecar_breakdown"] == [
+        {"provider_total_ms": 7000.0, "worker_total_ms": 6900.0},
+        {"provider_total_ms": 100.0, "worker_total_ms": 90.0},
+        {"provider_total_ms": 200.0, "worker_total_ms": 180.0},
+    ]
+    assert summary["warm_breakdown"] == [
+        {"provider_total_ms": 100.0, "worker_total_ms": 90.0},
+        {"provider_total_ms": 200.0, "worker_total_ms": 180.0},
+    ]
 
 
 def test_write_benchmark_report_creates_parent_directory(tmp_path: Path) -> None:
