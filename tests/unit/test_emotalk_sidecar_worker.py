@@ -3,9 +3,11 @@ from __future__ import annotations
 import io
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from bionic_head.sidecar_protocol import (
     SidecarRequest,
@@ -231,6 +233,102 @@ def test_serve_logs_request_error_to_stderr_without_writing_text_to_stdout() -> 
     assert "boom level=3 person=4" in response.error_message
     assert "prediction_failed" in stderr.getvalue()
     assert b"Traceback" not in stdout.getvalue()
+
+
+def test_load_real_runner_loads_upstream_export_script_by_file_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bionic_head.emotalk_sidecar_worker import _load_real_runner
+
+    emotalk_root = tmp_path / "emotalk-root"
+    export_dir = emotalk_root / "scripts"
+    export_dir.mkdir(parents=True)
+    (export_dir / "export_blendshape_from_audio.py").write_text(
+        "\n".join(
+            [
+                "LOAD_MODEL_CALLS = []",
+                "",
+                "class FakeModel:",
+                "    def predict(self, audio_tensor, level_tensor, person_tensor):",
+                "        return [[0.0] * 52]",
+                "",
+                "def load_model(args):",
+                "    LOAD_MODEL_CALLS.append(args)",
+                "    return FakeModel()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    shadow_root = tmp_path / "shadow-repo"
+    shadow_scripts = shadow_root / "scripts"
+    shadow_scripts.mkdir(parents=True)
+    (shadow_scripts / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(shadow_root))
+
+    import importlib
+    sys.modules.pop("scripts", None)
+    scripts_package = importlib.import_module("scripts")
+    assert scripts_package.__file__ == str(shadow_scripts / "__init__.py")
+
+    for name in [
+        "torch",
+        "scripts",
+        "scripts.export_blendshape_from_audio",
+        "emotalk_export_blendshape_from_audio",
+    ]:
+        sys.modules.pop(name, None)
+
+    class _FakeTensor:
+        def unsqueeze(self, _dim: int):
+            return self
+
+        def to(self, _device: str):
+            return self
+
+    class _FakeInferenceMode:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeTorch:
+        def set_num_threads(self, _count: int) -> None:
+            pass
+
+        def set_num_interop_threads(self, _count: int) -> None:
+            pass
+
+        def no_grad(self):
+            return _FakeInferenceMode()
+
+        def from_numpy(self, _array: np.ndarray):
+            return _FakeTensor()
+
+        def tensor(self, _values):
+            return _FakeTensor()
+
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
+
+    args = SimpleNamespace(
+        emotalk_root=str(emotalk_root),
+        checkpoint="/tmp/fake-checkpoint.pth",
+        device="cpu",
+        fps=30,
+        level=1,
+        person=0,
+        wav2vec_content_path=None,
+        wav2vec_emotion_path=None,
+        torch_num_threads=4,
+        torch_interop_threads=1,
+    )
+
+    _load_real_runner(args, io.StringIO())
+
+    loaded_module = sys.modules["emotalk_export_blendshape_from_audio"]
+    assert loaded_module.__file__ == str(export_dir / "export_blendshape_from_audio.py")
+    assert loaded_module.LOAD_MODEL_CALLS
+    assert "scripts.export_blendshape_from_audio" not in sys.modules
 
 
 def test_serve_fails_startup_when_cli_fps_is_not_30() -> None:

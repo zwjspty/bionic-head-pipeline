@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib
+import importlib.util
 import struct
 import sys
 import traceback
@@ -195,13 +196,26 @@ def handle_request_payload(
 
 
 def _load_real_runner(args: argparse.Namespace, stderr: TextIO) -> Callable[[np.ndarray], object]:
-    emotalk_root = str(Path(args.emotalk_root).resolve())
-    if emotalk_root not in sys.path:
-        sys.path.insert(0, emotalk_root)
+    emotalk_root = Path(args.emotalk_root).resolve()
+    emotalk_root_str = str(emotalk_root)
+    if emotalk_root_str not in sys.path:
+        sys.path.insert(0, emotalk_root_str)
+
+    export_script_path = emotalk_root / "scripts" / "export_blendshape_from_audio.py"
+    if not export_script_path.is_file():
+        raise FileNotFoundError(f"missing EmoTalk export script: {export_script_path}")
 
     with contextlib.redirect_stdout(stderr):
         torch = importlib.import_module("torch")
-        export_module = importlib.import_module("scripts.export_blendshape_from_audio")
+        spec = importlib.util.spec_from_file_location(
+            "emotalk_export_blendshape_from_audio",
+            export_script_path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"unable to load EmoTalk export script: {export_script_path}")
+        export_module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = export_module
+        spec.loader.exec_module(export_module)
         if getattr(args, "torch_num_threads", None) is not None:
             torch.set_num_threads(args.torch_num_threads)
         if getattr(args, "torch_interop_threads", None) is not None:
