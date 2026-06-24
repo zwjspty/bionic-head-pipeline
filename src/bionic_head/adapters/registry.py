@@ -223,6 +223,14 @@ class _Audio2FaceWrapper(_BaseWrapper):
             timeout_seconds=self._settings.timeout_seconds,
         )
 
+    async def prewarm(self) -> DiagnosticResult:
+        try:
+            return await self._inner.prewarm()  # type: ignore[attr-defined]
+        except PipelineException:
+            raise
+        except Exception as exc:
+            raise _provider_failed("audio2face.prewarm", self.name, exc) from exc
+
 
 class _UE5Wrapper(_BaseWrapper):
     async def format(self, face: FaceArtifact, context: TurnContext) -> UE5Payload:

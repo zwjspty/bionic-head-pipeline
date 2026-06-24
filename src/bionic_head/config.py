@@ -162,6 +162,11 @@ class EmoTalkSidecarSettings(BaseModel):
     timeout_seconds: float = Field(default=10.0, gt=0)
     channel_count: Literal[52] = 52
     output_npy_name: str = "face.npy"
+    prewarm_on_startup: bool = True
+    prewarm_on_session_start: bool = False
+    prewarm_required: bool = True
+    prewarm_audio_seconds: float = Field(default=1.0, gt=0)
+    prewarm_timeout_seconds: float = Field(default=30.0, gt=0)
 
 
 class ProvidersSettings(BaseModel):

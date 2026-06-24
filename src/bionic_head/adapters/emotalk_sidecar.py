@@ -56,6 +56,8 @@ class EmoTalkSidecarAudio2FaceAdapter:
         output_npy_name: str = "face.npy",
         sidecar_cwd: Path | None = None,
         sidecar_env: dict[str, str] | None = None,
+        prewarm_audio_seconds: float = 1.0,
+        prewarm_timeout_seconds: float = 30.0,
     ) -> None:
         self.sidecar_command = list(sidecar_command)
         self.sidecar_cwd = Path(sidecar_cwd) if sidecar_cwd is not None else None
@@ -65,6 +67,9 @@ class EmoTalkSidecarAudio2FaceAdapter:
         self.timeout_seconds = timeout_seconds
         self.channel_count = channel_count
         self.output_npy_name = output_npy_name
+        self.prewarm_audio_seconds = prewarm_audio_seconds
+        self.prewarm_timeout_seconds = prewarm_timeout_seconds
+        self.last_prewarm_metrics: dict[str, float] = {}
         self.call_count = 0
         self.process_start_count = 0
         self._process: asyncio.subprocess.Process | None = None
@@ -87,6 +92,8 @@ class EmoTalkSidecarAudio2FaceAdapter:
             output_npy_name=settings.output_npy_name,
             sidecar_cwd=settings.sidecar_cwd,
             sidecar_env=settings.sidecar_env,
+            prewarm_audio_seconds=settings.prewarm_audio_seconds,
+            prewarm_timeout_seconds=settings.prewarm_timeout_seconds,
         )
 
     @property
@@ -204,6 +211,71 @@ class EmoTalkSidecarAudio2FaceAdapter:
                 else:
                     stderr_task.cancel()
                     await asyncio.gather(stderr_task, return_exceptions=True)
+
+    async def prewarm(self) -> DiagnosticResult:
+        started = time.perf_counter()
+        sample_count = max(1, int(round(self.sample_rate * self.prewarm_audio_seconds)))
+        silence = np.zeros(sample_count, dtype=np.int16).tobytes()
+        request = SidecarRequest(
+            session_id="__prewarm__",
+            turn_id="__prewarm__",
+            generation_epoch=0,
+            sample_rate=self.sample_rate,
+            channels=1,
+            dtype="int16",
+            num_samples=sample_count,
+            fps=self.fps,
+            audio=silence,
+        )
+        metrics: dict[str, float] = {}
+
+        async with self._request_lock:
+            try:
+                response = await asyncio.wait_for(
+                    self._transact(request, metrics),
+                    timeout=self.prewarm_timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                pid = self.process_pid
+                await self.close()
+                raise PipelineException(
+                    code=ErrorCode.PROVIDER_TIMEOUT,
+                    stage="audio2face.prewarm",
+                    provider=self.name,
+                    retryable=True,
+                    message=f"EmoTalk sidecar prewarm timed out pid={pid}",
+                ) from exc
+            except PipelineException as exc:
+                if exc.stage == "audio2face.prewarm":
+                    raise
+                raise PipelineException(
+                    code=exc.code,
+                    stage="audio2face.prewarm",
+                    provider=exc.provider or self.name,
+                    retryable=exc.retryable,
+                    message=exc.safe_message,
+                ) from exc
+
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        self.last_prewarm_metrics = {
+            **(response.metrics or {}),
+            **metrics,
+            "provider_total_ms": latency_ms,
+        }
+        worker_total_ms = None
+        if response.metrics is not None:
+            worker_total_ms = response.metrics.get("worker_total_ms")
+        suffix = "" if worker_total_ms is None else f" worker_total_ms={worker_total_ms:.3f}"
+        return DiagnosticResult(
+            adapter="audio2face",
+            provider=self.name,
+            available=True,
+            latency_ms=latency_ms,
+            message=(
+                f"EmoTalk sidecar prewarmed pid={self.process_pid} "
+                f"frames={response.frame_count}{suffix}"
+            ),
+        )
 
     def _build_request(
         self,

@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--old-runs", type=int, default=1)
     parser.add_argument("--sidecar-runs", type=int, default=3)
+    parser.add_argument("--prewarm-runs", type=int, default=2)
     parser.add_argument("--skip-old", action="store_true")
     parser.add_argument("--skip-sidecar", action="store_true")
     return parser
@@ -49,6 +50,12 @@ def build_summary(
     old_shapes: list[list[int]],
     sidecar_shapes: list[list[int]],
     sidecar_breakdown: list[dict[str, float]] | None = None,
+    prewarm_ms: float | None = None,
+    first_real_after_prewarm_ms: float | None = None,
+    second_real_after_prewarm_ms: float | None = None,
+    prewarmed_ms: list[float] | None = None,
+    prewarm_breakdown: dict[str, float] | None = None,
+    prewarmed_breakdown: list[dict[str, float]] | None = None,
 ) -> dict[str, object]:
     speedup = None
     if old_emotalk_ms and sidecar_warm_ms:
@@ -56,15 +63,41 @@ def build_summary(
         if warm_mean > 0:
             speedup = statistics.fmean(old_emotalk_ms) / warm_mean
     rounded_breakdown = [_round_metrics(metrics) for metrics in (sidecar_breakdown or [])]
+    rounded_prewarmed_breakdown = [
+        _round_metrics(metrics) for metrics in (prewarmed_breakdown or [])
+    ]
+    rounded_prewarmed_ms = [round(value, 3) for value in (prewarmed_ms or [])]
+    first_after_prewarm = (
+        first_real_after_prewarm_ms
+        if first_real_after_prewarm_ms is not None
+        else (prewarmed_ms or [None])[0]
+    )
+    second_after_prewarm = (
+        second_real_after_prewarm_ms
+        if second_real_after_prewarm_ms is not None
+        else ((prewarmed_ms or [None, None])[1] if len(prewarmed_ms or []) > 1 else None)
+    )
     return {
         "old_emotalk_ms": [round(value, 3) for value in old_emotalk_ms],
         "sidecar_cold_ms": None if sidecar_cold_ms is None else round(sidecar_cold_ms, 3),
+        "cold_without_prewarm_ms": None if sidecar_cold_ms is None else round(sidecar_cold_ms, 3),
         "sidecar_warm_ms": [round(value, 3) for value in sidecar_warm_ms],
         "speedup_warm_vs_old": None if speedup is None else round(speedup, 3),
         "old_shapes": old_shapes,
         "sidecar_shapes": sidecar_shapes,
         "sidecar_breakdown": rounded_breakdown,
         "warm_breakdown": rounded_breakdown[1:],
+        "prewarm_ms": None if prewarm_ms is None else round(prewarm_ms, 3),
+        "first_real_after_prewarm_ms": None
+        if first_after_prewarm is None
+        else round(first_after_prewarm, 3),
+        "second_real_after_prewarm_ms": None
+        if second_after_prewarm is None
+        else round(second_after_prewarm, 3),
+        "prewarmed_ms": rounded_prewarmed_ms,
+        "prewarm_effective": None if first_after_prewarm is None else first_after_prewarm < 1000.0,
+        "prewarm_breakdown": _round_metrics(prewarm_breakdown or {}),
+        "prewarmed_breakdown": rounded_prewarmed_breakdown,
     }
 
 
@@ -74,8 +107,8 @@ def write_report(path: Path, payload: dict[str, object]) -> None:
 
 
 async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
-    if args.old_runs < 0 or args.sidecar_runs < 0:
-        raise SystemExit("--old-runs and --sidecar-runs must be non-negative")
+    if args.old_runs < 0 or args.sidecar_runs < 0 or args.prewarm_runs < 0:
+        raise SystemExit("--old-runs, --sidecar-runs, and --prewarm-runs must be non-negative")
     if args.skip_old and args.skip_sidecar:
         raise SystemExit("nothing to benchmark: both --skip-old and --skip-sidecar were set")
 
@@ -89,6 +122,11 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     sidecar_ms: list[float] = []
     sidecar_shapes: list[list[int]] = []
     sidecar_breakdown: list[dict[str, float]] = []
+    prewarm_ms: float | None = None
+    prewarm_breakdown: dict[str, float] = {}
+    prewarmed_ms: list[float] = []
+    prewarmed_shapes: list[list[int]] = []
+    prewarmed_breakdown: list[dict[str, float]] = []
 
     if not args.skip_old and args.old_runs > 0:
         old_adapter = EmoTalkAudio2FaceAdapter.from_settings(
@@ -120,6 +158,27 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         if sidecar_adapter is not None:
             await sidecar_adapter.close()
 
+    prewarmed_adapter: EmoTalkSidecarAudio2FaceAdapter | None = None
+    try:
+        if not args.skip_sidecar and args.prewarm_runs > 0:
+            prewarmed_adapter = EmoTalkSidecarAudio2FaceAdapter.from_settings(
+                settings.providers.emotalk_sidecar,
+            )
+            prewarm_started = perf_counter()
+            await prewarmed_adapter.prewarm()
+            prewarm_ms = (perf_counter() - prewarm_started) * 1000.0
+            prewarm_breakdown = dict(prewarmed_adapter.last_prewarm_metrics)
+            prewarmed_ms, prewarmed_shapes, prewarmed_breakdown = await _time_adapter(
+                prewarmed_adapter,
+                audio,
+                run_root=run_root,
+                label="emotalk_sidecar_after_prewarm",
+                runs=args.prewarm_runs,
+            )
+    finally:
+        if prewarmed_adapter is not None:
+            await prewarmed_adapter.close()
+
     summary = build_summary(
         old_emotalk_ms=old_ms,
         sidecar_cold_ms=sidecar_ms[0] if sidecar_ms else None,
@@ -127,6 +186,10 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         old_shapes=old_shapes,
         sidecar_shapes=sidecar_shapes,
         sidecar_breakdown=sidecar_breakdown,
+        prewarm_ms=prewarm_ms,
+        prewarmed_ms=prewarmed_ms,
+        prewarm_breakdown=prewarm_breakdown,
+        prewarmed_breakdown=prewarmed_breakdown,
     )
     return {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -143,6 +206,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         if settings.providers.emotalk_sidecar.sidecar_cwd is None
         else str(settings.providers.emotalk_sidecar.sidecar_cwd),
         "sidecar_env": settings.providers.emotalk_sidecar.sidecar_env,
+        "prewarmed_shapes": prewarmed_shapes,
         **summary,
     }
 
@@ -230,6 +294,10 @@ def main() -> None:
         old_shapes=report["old_shapes"],  # type: ignore[arg-type]
         sidecar_shapes=report["sidecar_shapes"],  # type: ignore[arg-type]
         sidecar_breakdown=report["sidecar_breakdown"],  # type: ignore[arg-type]
+        prewarm_ms=report["prewarm_ms"],  # type: ignore[arg-type]
+        prewarmed_ms=report["prewarmed_ms"],  # type: ignore[arg-type]
+        prewarm_breakdown=report["prewarm_breakdown"],  # type: ignore[arg-type]
+        prewarmed_breakdown=report["prewarmed_breakdown"],  # type: ignore[arg-type]
     ), ensure_ascii=False, indent=2))
 
 

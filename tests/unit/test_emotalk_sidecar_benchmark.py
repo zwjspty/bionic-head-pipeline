@@ -35,10 +35,20 @@ def test_build_summary_compares_old_cold_and_warm_sidecar() -> None:
             {"provider_total_ms": 100.0, "worker_total_ms": 90.0},
             {"provider_total_ms": 200.0, "worker_total_ms": 180.0},
         ],
+        prewarm_ms=7350.120,
+        first_real_after_prewarm_ms=440.231,
+        second_real_after_prewarm_ms=432.884,
+        prewarmed_ms=[440.231, 432.884],
+        prewarm_breakdown={"worker_total_ms": 7340.0, "model_predict_ms": 400.0},
+        prewarmed_breakdown=[
+            {"provider_total_ms": 440.231, "worker_total_ms": 439.0},
+            {"provider_total_ms": 432.884, "worker_total_ms": 431.0},
+        ],
     )
 
     assert summary["old_emotalk_ms"] == [8000.0, 16000.0]
     assert summary["sidecar_cold_ms"] == 7000.0
+    assert summary["cold_without_prewarm_ms"] == 7000.0
     assert summary["sidecar_warm_ms"] == [100.0, 200.0]
     assert summary["speedup_warm_vs_old"] == 80.0
     assert summary["old_shapes"] == [[111, 52], [99, 52]]
@@ -51,6 +61,18 @@ def test_build_summary_compares_old_cold_and_warm_sidecar() -> None:
     assert summary["warm_breakdown"] == [
         {"provider_total_ms": 100.0, "worker_total_ms": 90.0},
         {"provider_total_ms": 200.0, "worker_total_ms": 180.0},
+    ]
+    assert summary["prewarm_ms"] == 7350.12
+    assert summary["first_real_after_prewarm_ms"] == 440.231
+    assert summary["second_real_after_prewarm_ms"] == 432.884
+    assert summary["prewarm_effective"] is True
+    assert summary["prewarm_breakdown"] == {
+        "worker_total_ms": 7340.0,
+        "model_predict_ms": 400.0,
+    }
+    assert summary["prewarmed_breakdown"] == [
+        {"provider_total_ms": 440.231, "worker_total_ms": 439.0},
+        {"provider_total_ms": 432.884, "worker_total_ms": 431.0},
     ]
 
 

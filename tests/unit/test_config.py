@@ -86,6 +86,11 @@ def test_load_emotalk_example_settings() -> None:
     assert settings.providers.emotalk_sidecar.channel_count == 52
     assert settings.providers.emotalk_sidecar.output_npy_name == "emotalk.npy"
     assert settings.providers.emotalk_sidecar.timeout_seconds == 20
+    assert settings.providers.emotalk_sidecar.prewarm_on_startup is True
+    assert settings.providers.emotalk_sidecar.prewarm_on_session_start is False
+    assert settings.providers.emotalk_sidecar.prewarm_required is True
+    assert settings.providers.emotalk_sidecar.prewarm_audio_seconds == pytest.approx(1.0)
+    assert settings.providers.emotalk_sidecar.prewarm_timeout_seconds == pytest.approx(30.0)
     assert settings.providers.emotalk.executable == "/home/user/miniconda3/bin/conda"
     assert settings.providers.emotalk.args == [
         "run",
@@ -147,6 +152,11 @@ def test_accepts_emotalk_sidecar_provider_config() -> None:
                     "fps": 30,
                     "timeout_seconds": 10.0,
                     "channel_count": 52,
+                    "prewarm_on_startup": True,
+                    "prewarm_on_session_start": False,
+                    "prewarm_required": True,
+                    "prewarm_audio_seconds": 1.0,
+                    "prewarm_timeout_seconds": 30.0,
                 }
             },
         }
@@ -161,3 +171,8 @@ def test_accepts_emotalk_sidecar_provider_config() -> None:
         "PYTHONPATH": "src:.",
         "BIONIC_TEST": "1",
     }
+    assert settings.providers.emotalk_sidecar.prewarm_on_startup is True
+    assert settings.providers.emotalk_sidecar.prewarm_on_session_start is False
+    assert settings.providers.emotalk_sidecar.prewarm_required is True
+    assert settings.providers.emotalk_sidecar.prewarm_audio_seconds == pytest.approx(1.0)
+    assert settings.providers.emotalk_sidecar.prewarm_timeout_seconds == pytest.approx(30.0)

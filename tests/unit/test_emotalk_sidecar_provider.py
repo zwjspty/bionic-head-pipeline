@@ -80,6 +80,107 @@ async def test_provider_starts_fake_sidecar_and_returns_n_by_52(
 
 
 @pytest.mark.asyncio
+async def test_provider_prewarm_starts_sidecar_without_writing_artifacts(tmp_path: Path) -> None:
+    adapter = _adapter([sys.executable, "-m", "bionic_head.emotalk_fake_sidecar"])
+
+    result = await adapter.prewarm()
+
+    assert result.available is True
+    assert result.adapter == "audio2face"
+    assert result.provider == "emotalk_sidecar"
+    assert "prewarmed" in result.message
+    assert adapter.process_start_count == 1
+    assert adapter.call_count == 0
+    assert list(tmp_path.rglob("face.npy")) == []
+    assert list(tmp_path.rglob("meta.json")) == []
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_prewarm_then_drive_reuses_same_sidecar_process(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    adapter = _adapter([sys.executable, "-m", "bionic_head.emotalk_fake_sidecar"])
+
+    await adapter.prewarm()
+    prewarm_pid = adapter.process_pid
+    await adapter.prewarm()
+    face = await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
+
+    assert face.frame_count == 30
+    assert adapter.process_pid == prewarm_pid
+    assert adapter.process_start_count == 1
+    assert adapter.call_count == 1
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_prewarm_timeout_closes_bad_sidecar(tmp_path: Path) -> None:
+    adapter = _adapter(
+        _sidecar_script(
+            tmp_path / "sleep_sidecar.py",
+            """
+import time
+
+time.sleep(60)
+""",
+        ),
+        prewarm_timeout_seconds=0.05,
+    )
+
+    with pytest.raises(PipelineException) as raised:
+        await adapter.prewarm()
+
+    assert raised.value.code is ErrorCode.PROVIDER_TIMEOUT
+    assert raised.value.stage == "audio2face.prewarm"
+    assert adapter.process is None or adapter.process.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_provider_prewarm_maps_sidecar_failure_to_prewarm_stage(tmp_path: Path) -> None:
+    adapter = _adapter(
+        _sidecar_script(
+            tmp_path / "prewarm_error_sidecar.py",
+            """
+import sys
+
+from bionic_head.sidecar_protocol import (
+    SidecarResponse,
+    decode_request,
+    encode_message,
+    encode_response,
+    read_message,
+)
+
+header, body = read_message(sys.stdin.buffer)
+request = decode_request(encode_message(header, body))
+response = SidecarResponse.failure(
+    "invalid_request",
+    "boom",
+    session_id=request.session_id,
+    turn_id=request.turn_id,
+    generation_epoch=request.generation_epoch,
+)
+sys.stdout.buffer.write(encode_response(response))
+sys.stdout.buffer.flush()
+""",
+        )
+    )
+
+    with pytest.raises(PipelineException) as raised:
+        await adapter.prewarm()
+
+    assert raised.value.code is ErrorCode.PROVIDER_FAILED
+    assert raised.value.stage == "audio2face.prewarm"
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_provider_writes_provider_metrics_when_sidecar_omits_worker_metrics(
     tmp_path: Path,
     turn_context,
@@ -573,6 +674,57 @@ def test_registry_builds_sidecar_audio2face_without_starting_process(mock_settin
 
     assert registry.audio2face.name == "emotalk_sidecar"
     assert registry.audio2face.process_start_count == 0
+
+
+@pytest.mark.asyncio
+async def test_registry_audio2face_prewarm_uses_provider_prewarm_timeout_not_adapter_timeout(
+    mock_settings,
+    tmp_path: Path,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.adapters.audio2face.provider = "emotalk_sidecar"
+    settings.adapters.audio2face.timeout_seconds = 0.001
+    settings.providers.emotalk_sidecar.sidecar_command = _sidecar_script(
+        tmp_path / "slow_success_sidecar.py",
+        """
+import sys
+import time
+
+import numpy as np
+
+from bionic_head.sidecar_protocol import (
+    SidecarResponse,
+    decode_request,
+    encode_message,
+    encode_response,
+    read_message,
+)
+
+header, body = read_message(sys.stdin.buffer)
+request = decode_request(encode_message(header, body))
+time.sleep(0.05)
+frames = np.zeros((1, 52), dtype=np.float32)
+response = SidecarResponse.success(
+    session_id=request.session_id,
+    turn_id=request.turn_id,
+    generation_epoch=request.generation_epoch,
+    frame_count=1,
+    frames=frames.tobytes(),
+    fps=request.fps,
+)
+sys.stdout.buffer.write(encode_response(response))
+sys.stdout.buffer.flush()
+""",
+    )
+    settings.providers.emotalk_sidecar.prewarm_timeout_seconds = 1.0
+
+    registry = build_registry(settings)
+
+    result = await registry.audio2face.prewarm()  # type: ignore[attr-defined]
+
+    assert result.available is True
+
+    await registry.audio2face.close()  # type: ignore[attr-defined]
 
 
 def test_app_settings_accepts_emotalk_sidecar_provider_config() -> None:

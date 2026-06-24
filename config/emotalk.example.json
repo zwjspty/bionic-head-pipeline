@@ -86,7 +86,12 @@
       "fps": 30,
       "timeout_seconds": 20.0,
       "channel_count": 52,
-      "output_npy_name": "emotalk.npy"
+      "output_npy_name": "emotalk.npy",
+      "prewarm_on_startup": true,
+      "prewarm_on_session_start": false,
+      "prewarm_required": true,
+      "prewarm_audio_seconds": 1.0,
+      "prewarm_timeout_seconds": 30.0
     }
   },
   "storage": {"root": "data"}

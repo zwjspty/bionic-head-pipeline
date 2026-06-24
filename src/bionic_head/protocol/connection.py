@@ -102,6 +102,17 @@ class StreamConnection:
                         await self._send_pipeline_error(exc, turn_id=None)
                         admission = None
                         continue
+                    if (
+                        self.container.settings.adapters.audio2face.provider == "emotalk_sidecar"
+                        and self.container.settings.providers.emotalk_sidecar.prewarm_on_session_start
+                    ):
+                        try:
+                            await self.container.prewarm_audio2face()
+                        except PipelineException as exc:
+                            await self._send_pipeline_error(exc, turn_id=None)
+                            await admission.__aexit__(None, None, None)
+                            admission = None
+                            continue
                     await self._send_json_direct(
                         self._factory().server(EventType.SERVER_SESSION_READY, None, {})
                     )
