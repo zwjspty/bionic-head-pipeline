@@ -105,7 +105,7 @@ def test_handle_request_payload_with_fake_runner_returns_valid_success_response(
         return np.arange(104, dtype=np.float32).reshape(2, 52)
 
     response_payload = handle_request_payload(
-        encode_request(_valid_request(num_samples=4, fps=24)),
+        encode_request(_valid_request(num_samples=4, fps=30)),
         fake_runner,
         level=7,
         person=2,
@@ -115,7 +115,7 @@ def test_handle_request_payload_with_fake_runner_returns_valid_success_response(
     assert response.ok is True
     assert response.frame_count == 2
     assert response.channel_count == 52
-    assert response.fps == 24
+    assert response.fps == 30
     assert len(calls) == 1
     np.testing.assert_allclose(
         calls[0][0],
@@ -123,6 +123,32 @@ def test_handle_request_payload_with_fake_runner_returns_valid_success_response(
         atol=1e-6,
     )
     assert calls[0][1:] == (7, 2)
+
+
+def test_handle_request_payload_rejects_non_30fps_request_without_calling_runner() -> None:
+    from bionic_head.emotalk_sidecar_worker import handle_request_payload
+
+    calls = []
+
+    def fake_runner(audio: np.ndarray, *, level: int, person: int) -> np.ndarray:
+        calls.append((audio.copy(), level, person))
+        return np.zeros((1, 52), dtype=np.float32)
+
+    response_payload = handle_request_payload(
+        encode_request(_valid_request(num_samples=4, fps=24)),
+        fake_runner,
+        level=7,
+        person=2,
+    )
+    response = decode_response(response_payload)
+
+    assert response.ok is False
+    assert response.error_code == "invalid_request"
+    assert response.error_message == "fps must be 30"
+    assert response.session_id == "session-1"
+    assert response.turn_id == "turn-1"
+    assert response.generation_epoch == 3
+    assert calls == []
 
 
 def test_handle_request_payload_returns_failure_response_for_invalid_request() -> None:
@@ -205,6 +231,28 @@ def test_serve_logs_request_error_to_stderr_without_writing_text_to_stdout() -> 
     assert "boom level=3 person=4" in response.error_message
     assert "prediction_failed" in stderr.getvalue()
     assert b"Traceback" not in stdout.getvalue()
+
+
+def test_serve_fails_startup_when_cli_fps_is_not_30() -> None:
+    from bionic_head.emotalk_sidecar_worker import serve
+
+    runner_factory_calls = []
+    stdout = io.BytesIO()
+    stderr = io.StringIO()
+
+    exit_code = serve(
+        io.BytesIO(),
+        stdout,
+        stderr,
+        args=SimpleNamespace(level=1, person=0, warmup=False, fps=24),
+        runner_factory=lambda _args: runner_factory_calls.append(True),
+    )
+
+    assert exit_code == 1
+    assert runner_factory_calls == []
+    assert stdout.getvalue() == b""
+    assert "startup_failed" in stderr.getvalue()
+    assert "fps must be 30" in stderr.getvalue()
 
 
 def test_serve_exits_cleanly_on_eof() -> None:

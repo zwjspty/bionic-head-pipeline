@@ -26,6 +26,7 @@ DEFAULT_EMOTALK_ROOT = "/home/user/code/EmoTalk_release"
 DEFAULT_CHECKPOINT = "/home/user/code/EmoTalk_release/pretrain_model/EmoTalk.pth"
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHANNEL_COUNT = 52
+SUPPORTED_FPS = 30
 
 Runner = Callable[[np.ndarray], object]
 
@@ -51,6 +52,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_arg_parser().parse_args(argv)
+
+
+def _validate_supported_fps(fps: int) -> None:
+    if fps != SUPPORTED_FPS:
+        raise ValueError(f"fps must be {SUPPORTED_FPS}")
 
 
 def pcm16_bytes_to_float32_waveform(audio: bytes) -> np.ndarray:
@@ -154,6 +160,7 @@ def handle_request_payload(
     request: SidecarRequest | None = None
     try:
         request = decode_request(payload)
+        _validate_supported_fps(request.fps)
         waveform = pcm16_bytes_to_float32_waveform(request.audio)
         prediction = runner(waveform, level=level, person=person)
         frames = _coerce_frames(prediction)
@@ -173,6 +180,14 @@ def handle_request_payload(
         if stderr is not None:
             _log(stderr, f"invalid_request: {exc}")
         return _failure_response("invalid_request", str(exc), request)
+    except ValueError as exc:
+        if request is not None and str(exc) == f"fps must be {SUPPORTED_FPS}":
+            if stderr is not None:
+                _log(stderr, f"invalid_request: {exc}")
+            return _failure_response("invalid_request", str(exc), request)
+        if stderr is not None:
+            _log_exception(stderr, "prediction_failed", exc)
+        return _failure_response("prediction_failed", str(exc) or "prediction_failed", request)
     except Exception as exc:
         if stderr is not None:
             _log_exception(stderr, "prediction_failed", exc)
@@ -276,6 +291,7 @@ def serve(
 ) -> int:
     factory = runner_factory or (lambda inner_args: _load_real_runner(inner_args, stderr))
     try:
+        _validate_supported_fps(getattr(args, "fps", SUPPORTED_FPS))
         runner = factory(args)
         if args.warmup:
             _warmup(runner, stderr, level=args.level, person=args.person)

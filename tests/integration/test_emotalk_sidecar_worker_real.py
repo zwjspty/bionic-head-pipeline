@@ -68,6 +68,10 @@ def test_real_worker_smoke_two_requests_then_clean_exit() -> None:
     assert second.channel_count == 52
     assert first.frame_count > 0
     assert second.frame_count > 0
+    first_frames = np.frombuffer(first.frames, dtype=np.float32).reshape(first.frame_count, 52)
+    second_frames = np.frombuffer(second.frames, dtype=np.float32).reshape(second.frame_count, 52)
+    assert first_frames.shape == (first.frame_count, 52)
+    assert second_frames.shape == (second.frame_count, 52)
 
     process.stdin.close()
     assert process.wait(timeout=10) == 0
