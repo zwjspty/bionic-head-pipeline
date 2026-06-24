@@ -280,6 +280,12 @@ morpheus_00 ... morpheus_51
 
 ### Task 11：取消正确性与有序 Face 管线
 
+正式任务名：
+
+```text
+Task 11: Cancellation-safe sidecar and ordered stream output
+```
+
 范围：
 
 ```text
@@ -291,6 +297,29 @@ morpheus_00 ... morpheus_51
 6. playback.stop 使用高优先级出站通道
 ```
 
+推荐拆分：
+
+```text
+Task 11.1 sidecar request pump / drain-and-discard
+Task 11.2 provider cancel 统一语义
+Task 11.3 OrderedFaceSequencer
+Task 11.4 high-priority outbound queue
+Task 11.5 interrupt stress benchmark
+```
+
+关键原则：
+
+```text
+调用方取消 ≠ 立刻中断 worker 协议流
+调用方取消 = response 读完后丢弃
+
+Audio2Face 推理可以异步完成
+stitch / eye continuity / UE5 format / emit 必须按 segment_index 顺序
+
+playback.stop / terminal 必须高优先级发送
+普通 queued face/ue5 事件发送前必须重新检查 generation_epoch
+```
+
 验收：
 
 ```text
@@ -300,6 +329,18 @@ morpheus_00 ... morpheus_51
 无 response ID mismatch
 无旧 Face/UE5 输出
 连续执行 50 次 interrupt 不失步
+```
+
+Task 11 明确不做：
+
+```text
+不做真实 UE5 工程接入
+不做 ASR partial
+不做 Student FaceDriver
+不做 GPU/PyTorch 升级
+不做 CosyVoice
+不做复杂 AEC
+不重写整个 WebSocket 协议
 ```
 
 ### Task 12：真实播放客户端与音画同步
