@@ -24,6 +24,20 @@
     "reset_on_new_turn": true,
     "record_boundary_metrics": true
   },
+  "eye_continuity": {
+    "enabled": true,
+    "eye_smooth_channel_indices": [],
+    "blink_enabled": false,
+    "blink_channel_indices": [],
+    "overlap_frames": 6,
+    "record_boundary_metrics": true,
+    "blink_interval_min_sec": 2.5,
+    "blink_interval_max_sec": 6.0,
+    "blink_duration_frames": 5,
+    "blink_strength": 1.0,
+    "seed": 42,
+    "reset_blink_on_new_turn": false
+  },
   "adapters": {
     "asr": {"provider": "faster-whisper", "timeout_seconds": 5},
     "llm": {"provider": "ollama", "timeout_seconds": 5},
