@@ -67,13 +67,25 @@ def test_load_real_example_settings() -> None:
 def test_load_emotalk_example_settings() -> None:
     settings = load_settings(Path("config/emotalk.example.json"))
 
-    assert settings.adapters.audio2face.provider == "emotalk"
+    assert settings.adapters.audio2face.provider == "emotalk_sidecar"
     assert settings.adapters.ue5.provider == "morpheus-raw"
     assert settings.providers.ollama.keep_alive == "30m"
     assert settings.providers.ollama.num_ctx == 2048
     assert settings.providers.ollama.num_predict == 96
     assert settings.providers.ollama.temperature == pytest.approx(0.3)
     assert settings.providers.ollama.prewarm is True
+    assert settings.providers.emotalk_sidecar.sidecar_command == [
+        "/home/user/miniconda3/envs/emotalk/bin/python",
+        "-m",
+        "bionic_head.emotalk_sidecar_worker",
+    ]
+    assert settings.providers.emotalk_sidecar.sidecar_cwd == Path("/home/user/code/端到端")
+    assert settings.providers.emotalk_sidecar.sidecar_env == {"PYTHONPATH": "src:."}
+    assert settings.providers.emotalk_sidecar.sample_rate == 16000
+    assert settings.providers.emotalk_sidecar.fps == 30
+    assert settings.providers.emotalk_sidecar.channel_count == 52
+    assert settings.providers.emotalk_sidecar.output_npy_name == "emotalk.npy"
+    assert settings.providers.emotalk_sidecar.timeout_seconds == 20
     assert settings.providers.emotalk.executable == "/home/user/miniconda3/bin/conda"
     assert settings.providers.emotalk.args == [
         "run",
@@ -129,6 +141,8 @@ def test_accepts_emotalk_sidecar_provider_config() -> None:
             "providers": {
                 "emotalk_sidecar": {
                     "sidecar_command": ["python", "-m", "bionic_head.emotalk_fake_sidecar"],
+                    "sidecar_cwd": "/tmp/bionic-sidecar",
+                    "sidecar_env": {"PYTHONPATH": "src:.", "BIONIC_TEST": "1"},
                     "sample_rate": 16000,
                     "fps": 30,
                     "timeout_seconds": 10.0,
@@ -142,3 +156,8 @@ def test_accepts_emotalk_sidecar_provider_config() -> None:
     assert settings.providers.emotalk_sidecar.sample_rate == 16000
     assert settings.providers.emotalk_sidecar.fps == 30
     assert settings.providers.emotalk_sidecar.timeout_seconds == pytest.approx(10.0)
+    assert settings.providers.emotalk_sidecar.sidecar_cwd == Path("/tmp/bionic-sidecar")
+    assert settings.providers.emotalk_sidecar.sidecar_env == {
+        "PYTHONPATH": "src:.",
+        "BIONIC_TEST": "1",
+    }

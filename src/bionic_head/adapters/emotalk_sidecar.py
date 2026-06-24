@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import struct
 import time
@@ -49,8 +50,12 @@ class EmoTalkSidecarAudio2FaceAdapter:
         timeout_seconds: float,
         channel_count: int = 52,
         output_npy_name: str = "face.npy",
+        sidecar_cwd: Path | None = None,
+        sidecar_env: dict[str, str] | None = None,
     ) -> None:
         self.sidecar_command = list(sidecar_command)
+        self.sidecar_cwd = Path(sidecar_cwd) if sidecar_cwd is not None else None
+        self.sidecar_env = dict(sidecar_env or {})
         self.sample_rate = sample_rate
         self.fps = fps
         self.timeout_seconds = timeout_seconds
@@ -76,6 +81,8 @@ class EmoTalkSidecarAudio2FaceAdapter:
             timeout_seconds=settings.timeout_seconds,
             channel_count=settings.channel_count,
             output_npy_name=settings.output_npy_name,
+            sidecar_cwd=settings.sidecar_cwd,
+            sidecar_env=settings.sidecar_env,
         )
 
     @property
@@ -134,6 +141,13 @@ class EmoTalkSidecarAudio2FaceAdapter:
                 started=started,
                 available=False,
                 message="EmoTalk sidecar command not configured",
+            )
+        unsupported = self._unsupported_command_message()
+        if unsupported is not None:
+            return self._diagnostic(
+                started=started,
+                available=False,
+                message=unsupported,
             )
         if not self._command_executable_available(executable):
             return self._diagnostic(
@@ -283,6 +297,9 @@ class EmoTalkSidecarAudio2FaceAdapter:
 
             if not self.sidecar_command:
                 raise self._process_unavailable("EmoTalk sidecar command not configured", None)
+            unsupported = self._unsupported_command_message()
+            if unsupported is not None:
+                raise self._process_start_failed(request, unsupported, ValueError(unsupported))
 
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -290,6 +307,8 @@ class EmoTalkSidecarAudio2FaceAdapter:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    cwd=self.sidecar_cwd,
+                    env=self._subprocess_env(),
                 )
             except (FileNotFoundError, OSError) as exc:
                 raise self._process_start_failed(request, "EmoTalk sidecar failed to start", exc) from exc
@@ -519,3 +538,18 @@ class EmoTalkSidecarAudio2FaceAdapter:
         if path.is_absolute() or "/" in executable:
             return path.exists() and path.is_file()
         return shutil.which(executable) is not None
+
+    def _subprocess_env(self) -> dict[str, str] | None:
+        if not self.sidecar_env:
+            return None
+        return {**os.environ, **self.sidecar_env}
+
+    def _unsupported_command_message(self) -> str | None:
+        if len(self.sidecar_command) >= 2:
+            executable = Path(self.sidecar_command[0]).name
+            if executable == "conda" and self.sidecar_command[1] == "run":
+                return (
+                    "conda run is not supported for stdin/stdout EmoTalk sidecar protocol; "
+                    "use the conda env python executable path instead"
+                )
+        return None

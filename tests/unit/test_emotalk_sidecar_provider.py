@@ -43,15 +43,19 @@ def _sidecar_script(path: Path, body: str) -> list[str]:
     return [sys.executable, str(path)]
 
 
-def _adapter(command: list[str]):
+def _adapter(command: list[str], **overrides):
     from bionic_head.adapters.emotalk_sidecar import EmoTalkSidecarAudio2FaceAdapter
 
+    values = {
+        "sidecar_command": command,
+        "sample_rate": 16000,
+        "fps": 30,
+        "timeout_seconds": 1.0,
+        "channel_count": 52,
+    }
+    values.update(overrides)
     return EmoTalkSidecarAudio2FaceAdapter(
-        sidecar_command=command,
-        sample_rate=16000,
-        fps=30,
-        timeout_seconds=1.0,
-        channel_count=52,
+        **values,
     )
 
 
@@ -373,6 +377,97 @@ async def test_diagnostics_does_not_start_process() -> None:
     assert result.available is True
     assert adapter.process is None
     assert adapter.process_start_count == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_launches_sidecar_with_configured_cwd_and_env(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    sidecar_cwd = tmp_path / "sidecar-cwd"
+    sidecar_cwd.mkdir()
+    script = tmp_path / "cwd_env_sidecar.py"
+    script.write_text(
+        """
+import os
+import sys
+
+import numpy as np
+
+from bionic_head.sidecar_protocol import (
+    SidecarResponse,
+    decode_request,
+    encode_message,
+    encode_response,
+    read_message,
+)
+
+header, body = read_message(sys.stdin.buffer)
+request = decode_request(encode_message(header, body))
+if os.getcwd() != os.environ["EXPECTED_CWD"]:
+    raise SystemExit(f"bad cwd: {os.getcwd()}")
+if os.environ.get("BIONIC_SIDE_TEST") != "ok":
+    raise SystemExit("missing env overlay")
+frames = np.zeros((1, 52), dtype=np.float32)
+response = SidecarResponse.success(
+    session_id=request.session_id,
+    turn_id=request.turn_id,
+    generation_epoch=request.generation_epoch,
+    frame_count=1,
+    frames=frames.tobytes(),
+    fps=request.fps,
+)
+sys.stdout.buffer.write(encode_response(response))
+sys.stdout.buffer.flush()
+""",
+        encoding="utf-8",
+    )
+    adapter = _adapter(
+        [sys.executable, str(script)],
+        sidecar_cwd=sidecar_cwd,
+        sidecar_env={
+            "PYTHONPATH": str(Path.cwd() / "src"),
+            "EXPECTED_CWD": str(sidecar_cwd),
+            "BIONIC_SIDE_TEST": "ok",
+        },
+    )
+
+    face = await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
+
+    assert face.frame_count == 1
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_rejects_conda_run_sidecar_command(
+    tmp_path: Path,
+    turn_context,
+) -> None:
+    audio = audio_artifact_from_wav(_mono_wav(tmp_path / "speech.wav"))
+    adapter = _adapter(
+        [
+            "conda",
+            "run",
+            "-n",
+            "emotalk",
+            "python",
+            "-m",
+            "bionic_head.emotalk_sidecar_worker",
+        ]
+    )
+
+    diagnostic = await adapter.diagnostics()
+
+    assert diagnostic.available is False
+    assert "conda run is not supported" in diagnostic.message
+
+    with pytest.raises(PipelineException) as raised:
+        await adapter.drive(audio, Emotion.FRIENDLY, 0.8, turn_context)
+
+    assert raised.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert "conda run is not supported" in raised.value.safe_message
 
 
 def test_registry_builds_sidecar_audio2face_without_starting_process(mock_settings) -> None:

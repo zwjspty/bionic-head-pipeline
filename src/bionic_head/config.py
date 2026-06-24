@@ -155,6 +155,8 @@ class EmoTalkSidecarSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sidecar_command: list[str] = Field(default_factory=list)
+    sidecar_cwd: Path | None = None
+    sidecar_env: dict[str, str] = Field(default_factory=dict)
     sample_rate: Literal[16000] = 16000
     fps: int = Field(default=30, ge=1)
     timeout_seconds: float = Field(default=10.0, gt=0)
