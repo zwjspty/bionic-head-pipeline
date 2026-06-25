@@ -1,6 +1,9 @@
 import json
+import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +15,8 @@ from scripts.local_demo_client import (
     MemoryAudioSink,
     PlaybackMetrics,
     ProtocolError,
+    build_parser,
+    run_local_demo,
 )
 
 
@@ -33,6 +38,31 @@ class FakeClock:
 @pytest.fixture
 def fake_clock() -> FakeClock:
     return FakeClock()
+
+
+class FakeWebSocket:
+    def __init__(self, responses: list[str | bytes]) -> None:
+        self._responses = list(responses)
+        self.sent: list[str | bytes] = []
+
+    async def send(self, message: str | bytes) -> None:
+        self.sent.append(message)
+
+    async def recv(self) -> str | bytes:
+        if not self._responses:
+            raise AssertionError("fake websocket exhausted")
+        return self._responses.pop(0)
+
+
+class FakeConnect:
+    def __init__(self, websocket: FakeWebSocket) -> None:
+        self.websocket = websocket
+
+    async def __aenter__(self) -> FakeWebSocket:
+        return self.websocket
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
 
 
 @pytest.fixture
@@ -66,6 +96,140 @@ def server_envelope():
         return envelope
 
     return _build
+
+
+def test_build_parser_accepts_no_audio_mode() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--wav",
+            "/tmp/input.wav",
+            "--output-dir",
+            "/tmp/out",
+            "--no-play-audio",
+        ]
+    )
+
+    assert args.play_audio is False
+
+
+def test_build_parser_accepts_cancel_after_ms() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--wav",
+            "/tmp/input.wav",
+            "--output-dir",
+            "/tmp/out",
+            "--cancel-after-ms",
+            "500",
+        ]
+    )
+
+    assert args.cancel_after_ms == 500
+
+
+@pytest.mark.asyncio
+async def test_run_local_demo_streams_audio_and_writes_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server_envelope,
+) -> None:
+    ready = server_envelope("server.session.ready", payload={})
+    tts = server_envelope(
+        "server.tts.audio",
+        payload={
+            "chunk_id": "chunk-1",
+            "segment_id": "segment-1",
+            "format": "wav",
+            "byte_length": 12,
+            "generation_epoch": 0,
+        },
+    )
+    done = server_envelope("server.pipeline.done", payload={})
+    websocket = FakeWebSocket(
+        [json.dumps(ready), json.dumps(tts), b"RIFF....WAVE", json.dumps(done)]
+    )
+
+    monkeypatch.setattr(
+        "scripts.local_demo_client.read_pcm16_from_wav",
+        lambda _: b"\x01\x02" * 320,
+    )
+    monkeypatch.setattr("scripts.local_demo_client.pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        SimpleNamespace(connect=lambda url: FakeConnect(websocket)),
+    )
+
+    terminal = await run_local_demo(
+        "ws://127.0.0.1:8005/pipeline/stream",
+        tmp_path / "input.wav",
+        tmp_path / "out",
+        20,
+        play_audio=False,
+    )
+
+    assert terminal == "server.pipeline.done"
+    sent_events = [json.loads(message) for message in websocket.sent if isinstance(message, str)]
+    assert [event["type"] for event in sent_events] == [
+        "client.session.start",
+        "client.audio.start",
+        "client.audio.chunk",
+        "client.audio.end",
+    ]
+    assert websocket.sent[3] == b"\x01\x02" * 320
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["tts_chunks"] == 1
+    assert summary["terminal_event"] == "server.pipeline.done"
+
+
+@pytest.mark.asyncio
+async def test_run_local_demo_sends_turn_cancel_after_delay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server_envelope,
+) -> None:
+    ready = server_envelope("server.session.ready", payload={})
+    cancelled = server_envelope("server.turn.cancelled", payload={}, generation_epoch=1)
+    websocket = FakeWebSocket([json.dumps(ready), json.dumps(cancelled)])
+
+    monkeypatch.setattr(
+        "scripts.local_demo_client.read_pcm16_from_wav",
+        lambda _: b"\x01\x02" * 320,
+    )
+    monkeypatch.setattr("scripts.local_demo_client.pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        SimpleNamespace(connect=lambda url: FakeConnect(websocket)),
+    )
+
+    terminal = await run_local_demo(
+        "ws://127.0.0.1:8005/pipeline/stream",
+        tmp_path / "input.wav",
+        tmp_path / "out",
+        20,
+        play_audio=False,
+        cancel_after_ms=0,
+    )
+
+    assert terminal == "server.turn.cancelled"
+    sent_events = [json.loads(message) for message in websocket.sent if isinstance(message, str)]
+    assert [event["type"] for event in sent_events] == [
+        "client.session.start",
+        "client.audio.start",
+        "client.audio.chunk",
+        "client.audio.end",
+        "client.turn.cancel",
+    ]
+    assert sent_events[-1]["sequence"] == 5
 
 
 def test_audio_engine_enqueues_wav_and_records_metrics(fake_clock: Callable[[], float]) -> None:

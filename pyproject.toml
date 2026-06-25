@@ -24,6 +24,7 @@ dev = [
 asr = ["faster-whisper>=1.1,<2"]
 llm = ["httpx>=0.28,<1"]
 client = ["websockets>=15,<16"]
+client-audio = ["sounddevice>=0.5,<1"]
 all = [
   "faster-whisper>=1.1,<2",
   "httpx>=0.28,<1",

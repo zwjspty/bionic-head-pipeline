@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
+import contextlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from uuid import UUID
 from typing import Protocol
+from uuid import uuid4
+
+from scripts.stream_client import client_event, pcm_chunks, read_pcm16_from_wav
 
 
 TERMINAL_TYPES = {"server.pipeline.done", "server.pipeline.error", "server.turn.cancelled"}
@@ -74,6 +81,22 @@ class MemoryAudioSink:
 
     def stop(self) -> None:
         self.stopped_count += 1
+
+
+class SoundDeviceAudioSink:
+    def __init__(self) -> None:
+        try:
+            import sounddevice
+        except ImportError as exc:
+            raise SystemExit("sounddevice is required for audio playback; install the client-audio extra") from exc
+
+        self._sounddevice = sounddevice
+
+    def play(self, wav_bytes: bytes) -> None:
+        del wav_bytes
+
+    def stop(self) -> None:
+        self._sounddevice.stop()
 
 
 class AudioPlaybackEngine:
@@ -349,3 +372,175 @@ class LocalDemoReceiver:
 
     def _elapsed_ms(self) -> float:
         return round((self._clock() - self._started_at) * 1000.0, 3)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the local demo WebSocket client.")
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--wav", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--chunk-ms", type=int, default=40)
+    parser.add_argument("--cancel-after-ms", type=int)
+    parser.add_argument(
+        "--play-audio",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    return parser
+
+
+async def run_local_demo(
+    url: str,
+    wav_path: Path,
+    output_dir: Path,
+    chunk_ms: int,
+    play_audio: bool,
+    cancel_after_ms: int | None = None,
+) -> str:
+    try:
+        import websockets
+    except ImportError as exc:
+        raise SystemExit("websockets is required; install the client extra") from exc
+
+    pcm = read_pcm16_from_wav(wav_path)
+    session_id = uuid4()
+    turn_id = uuid4()
+    audio_sink: AudioSink = SoundDeviceAudioSink() if play_audio else MemoryAudioSink()
+    metrics = PlaybackMetrics(clock=perf_counter)
+    receiver = LocalDemoReceiver(
+        output_dir,
+        AudioPlaybackEngine(metrics, sink=audio_sink),
+        FacePlaybackEngine(metrics),
+    )
+    sequence = 1
+    cancel_task: asyncio.Task[None] | None = None
+
+    async with websockets.connect(url) as websocket:
+        await websocket.send(
+            json.dumps(
+                client_event(
+                    "client.session.start",
+                    session_id=session_id,
+                    turn_id=None,
+                    sequence=sequence,
+                    payload={"client_name": "local_demo_client"},
+                )
+            )
+        )
+        sequence += 1
+
+        first = await websocket.recv()
+        if isinstance(first, bytes):
+            raise ProtocolError("expected server.session.ready JSON")
+        receiver.accept_json(json.loads(first))
+        session_id = receiver.session_id or session_id
+        turn_id = receiver.turn_id or turn_id
+
+        await websocket.send(
+            json.dumps(
+                client_event(
+                    "client.audio.start",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    sequence=sequence,
+                    payload={"sample_rate": 16000, "channels": 1, "sample_width_bytes": 2},
+                )
+            )
+        )
+        sequence += 1
+        for chunk in pcm_chunks(pcm, chunk_ms=chunk_ms):
+            await websocket.send(
+                json.dumps(
+                    client_event(
+                        "client.audio.chunk",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        sequence=sequence,
+                        payload={
+                            "byte_length": len(chunk),
+                            "duration_ms": int(len(chunk) / 2 / 16000 * 1000),
+                        },
+                    )
+                )
+            )
+            sequence += 1
+            await websocket.send(chunk)
+
+        await websocket.send(
+            json.dumps(
+                client_event(
+                    "client.audio.end",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    sequence=sequence,
+                    payload={"reason": "client_end"},
+                )
+            )
+        )
+        sequence += 1
+
+        if cancel_after_ms is not None:
+            cancel_sequence = sequence
+
+            async def send_cancel() -> None:
+                await websocket.send(
+                    json.dumps(
+                        client_event(
+                            "client.turn.cancel",
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            sequence=cancel_sequence,
+                            payload={"reason": "client_timeout"},
+                        )
+                    )
+                )
+
+            if cancel_after_ms <= 0:
+                await send_cancel()
+            else:
+                async def delayed_cancel() -> None:
+                    await asyncio.sleep(cancel_after_ms / 1000.0)
+                    await send_cancel()
+
+                cancel_task = asyncio.create_task(delayed_cancel())
+
+        while receiver.terminal_event is None:
+            message = await websocket.recv()
+            if isinstance(message, bytes):
+                receiver.accept_binary(message)
+            else:
+                receiver.accept_json(json.loads(message))
+
+    if cancel_task is not None and not cancel_task.done():
+        cancel_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cancel_task
+    receiver.finish()
+    return str(receiver.terminal_event)
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    terminal_event = asyncio.run(
+        run_local_demo(
+            url=args.url,
+            wav_path=args.wav,
+            output_dir=args.output_dir,
+            chunk_ms=args.chunk_ms,
+            play_audio=args.play_audio,
+            cancel_after_ms=args.cancel_after_ms,
+        )
+    )
+    print(
+        json.dumps(
+            {
+                "terminal_event": terminal_event,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
