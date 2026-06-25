@@ -105,7 +105,8 @@ BIONIC_CONFIG=config/emotalk.example.json \
 4. [`docs/protocols/bionic-head-stream-v1.md`](docs/protocols/bionic-head-stream-v1.md)
 5. [`docs/protocols/bionic-head-ue5-v1.md`](docs/protocols/bionic-head-ue5-v1.md)
 6. [`docs/operations/real-providers.md`](docs/operations/real-providers.md)
-7. 最新计划：`docs/superpowers/plans/2026-06-24-task10-eye-continuity.md`
+7. [`docs/operations/local-demo-client.md`](docs/operations/local-demo-client.md)
+8. 最新计划：`docs/superpowers/plans/2026-06-24-task10-eye-continuity.md`
 
 ## 推荐下一阶段
 

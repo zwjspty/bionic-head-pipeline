@@ -1,0 +1,693 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import json
+import wave
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from io import BytesIO
+from pathlib import Path
+from time import perf_counter
+from uuid import UUID
+from typing import Protocol
+from uuid import uuid4
+
+import numpy as np
+
+from scripts.stream_client import client_event, pcm_chunks, read_pcm16_from_wav
+
+
+TERMINAL_TYPES = {"server.pipeline.done", "server.pipeline.error", "server.turn.cancelled"}
+
+
+class ProtocolError(RuntimeError):
+    pass
+
+
+class AudioSink(Protocol):
+    def play(self, wav_bytes: bytes) -> None:
+        ...
+
+    def stop(self) -> None:
+        ...
+
+
+class PlaybackMetrics:
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self._clock = clock
+        self._started_at = clock()
+        self.client_tts_received_ms: float | None = None
+        self.client_audio_enqueued_count = 0
+        self.client_audio_play_start_ms: float | None = None
+        self.client_audio_stopped_ms: float | None = None
+        self.client_ue5_first_frame_received_ms: float | None = None
+        self.client_face_buffered_chunk_count = 0
+        self.client_face_first_frame_displayed_ms: float | None = None
+        self.client_audio_face_offset_ms: float | None = None
+        self.client_face_buffer_cleared_ms: float | None = None
+        self.client_playback_stop_received_ms: float | None = None
+        self.client_interrupt_to_audio_stop_ms: float | None = None
+        self.client_stale_audio_drop_count = 0
+        self.client_stale_face_drop_count = 0
+
+    def mark_tts_received(self) -> None:
+        if self.client_tts_received_ms is None:
+            self.client_tts_received_ms = self._elapsed_ms()
+
+    def mark_audio_enqueued(self, generation_epoch: int | None = None) -> None:
+        self.client_audio_enqueued_count += 1
+
+    def mark_audio_play_started(self) -> None:
+        if self.client_audio_play_start_ms is None:
+            self.client_audio_play_start_ms = self._elapsed_ms()
+            self._update_audio_face_offset()
+
+    def mark_audio_stopped(self) -> None:
+        if self.client_audio_stopped_ms is None:
+            self.client_audio_stopped_ms = self._elapsed_ms()
+            self._update_interrupt_to_audio_stop()
+
+    def mark_playback_stop_received(self) -> None:
+        if self.client_playback_stop_received_ms is None:
+            self.client_playback_stop_received_ms = self._elapsed_ms()
+            self._update_interrupt_to_audio_stop()
+
+    def mark_ue5_frame_buffered(self) -> None:
+        received_ms = self._elapsed_ms()
+        self.client_face_buffered_chunk_count += 1
+        if self.client_ue5_first_frame_received_ms is None:
+            self.client_ue5_first_frame_received_ms = received_ms
+        if self.client_face_first_frame_displayed_ms is None:
+            self.client_face_first_frame_displayed_ms = received_ms
+        self._update_audio_face_offset()
+
+    def mark_face_buffer_cleared(self) -> None:
+        if self.client_face_buffer_cleared_ms is None:
+            self.client_face_buffer_cleared_ms = self._elapsed_ms()
+
+    def mark_stale_audio_dropped(self) -> None:
+        self.client_stale_audio_drop_count += 1
+
+    def mark_stale_face_dropped(self) -> None:
+        self.client_stale_face_drop_count += 1
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "client_tts_received_ms": self.client_tts_received_ms,
+            "client_audio_enqueued_count": self.client_audio_enqueued_count,
+            "client_audio_play_start_ms": self.client_audio_play_start_ms,
+            "client_audio_stopped_ms": self.client_audio_stopped_ms,
+            "client_ue5_first_frame_received_ms": self.client_ue5_first_frame_received_ms,
+            "client_face_buffered_chunk_count": self.client_face_buffered_chunk_count,
+            "client_face_first_frame_displayed_ms": self.client_face_first_frame_displayed_ms,
+            "client_audio_face_offset_ms": self.client_audio_face_offset_ms,
+            "client_playback_stop_received_ms": self.client_playback_stop_received_ms,
+            "client_interrupt_to_audio_stop_ms": self.client_interrupt_to_audio_stop_ms,
+            "client_face_buffer_cleared_ms": self.client_face_buffer_cleared_ms,
+            "client_stale_audio_drop_count": self.client_stale_audio_drop_count,
+            "client_stale_face_drop_count": self.client_stale_face_drop_count,
+        }
+
+    def _elapsed_ms(self) -> float:
+        return round((self._clock() - self._started_at) * 1000.0, 3)
+
+    def _update_audio_face_offset(self) -> None:
+        if (
+            self.client_audio_face_offset_ms is None
+            and self.client_audio_play_start_ms is not None
+            and self.client_face_first_frame_displayed_ms is not None
+        ):
+            self.client_audio_face_offset_ms = round(
+                self.client_face_first_frame_displayed_ms - self.client_audio_play_start_ms,
+                3,
+            )
+
+    def _update_interrupt_to_audio_stop(self) -> None:
+        if (
+            self.client_interrupt_to_audio_stop_ms is None
+            and self.client_playback_stop_received_ms is not None
+            and self.client_audio_stopped_ms is not None
+        ):
+            self.client_interrupt_to_audio_stop_ms = round(
+                self.client_audio_stopped_ms - self.client_playback_stop_received_ms,
+                3,
+            )
+
+
+class MemoryAudioSink:
+    def __init__(self) -> None:
+        self.played_chunks: list[bytes] = []
+        self.stopped_count = 0
+
+    def play(self, wav_bytes: bytes) -> None:
+        self.played_chunks.append(wav_bytes)
+
+    def stop(self) -> None:
+        self.stopped_count += 1
+
+
+class SoundDeviceAudioSink:
+    def __init__(self) -> None:
+        try:
+            import sounddevice
+        except ImportError as exc:
+            raise SystemExit("sounddevice is required for audio playback; install the client-audio extra") from exc
+
+        self._sounddevice = sounddevice
+
+    def play(self, wav_bytes: bytes) -> None:
+        with wave.open(BytesIO(wav_bytes), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            samplerate = wav_file.getframerate()
+            frames = wav_file.readframes(wav_file.getnframes())
+
+        dtype_by_width = {
+            1: np.uint8,
+            2: np.int16,
+            4: np.int32,
+        }
+        dtype = dtype_by_width.get(sample_width)
+        if dtype is None:
+            raise RuntimeError(f"unsupported WAV sample width: {sample_width}")
+
+        samples = np.frombuffer(frames, dtype=dtype)
+        if channels > 1:
+            samples = samples.reshape(-1, channels)
+        self._sounddevice.play(samples, samplerate)
+
+    def stop(self) -> None:
+        self._sounddevice.stop()
+
+
+class AudioPlaybackEngine:
+    def __init__(self, metrics: PlaybackMetrics, sink: AudioSink | None = None) -> None:
+        self._metrics = metrics
+        self._sink = sink or MemoryAudioSink()
+        self._queued_chunks: dict[str, bytes] = {}
+        self._pending_playback: deque[tuple[str, bytes, int | None]] = deque()
+        self._draining = False
+
+    @property
+    def metrics(self) -> PlaybackMetrics:
+        return self._metrics
+
+    @property
+    def queued_count(self) -> int:
+        return len(self._queued_chunks)
+
+    def enqueue_wav(self, chunk_id: str, wav_bytes: bytes, generation_epoch: int | None) -> None:
+        self._queued_chunks[chunk_id] = wav_bytes
+        self._pending_playback.append((chunk_id, wav_bytes, generation_epoch))
+        self._metrics.mark_audio_enqueued(generation_epoch)
+        self._drain_pending_playback()
+
+    def stop(self) -> None:
+        self._pending_playback.clear()
+        self._queued_chunks.clear()
+        self._sink.stop()
+        self._metrics.mark_audio_stopped()
+
+    def clear(self) -> None:
+        self._queued_chunks.clear()
+        self._pending_playback.clear()
+
+    def _drain_pending_playback(self) -> None:
+        if self._draining:
+            return
+        self._draining = True
+        try:
+            while self._pending_playback:
+                _, wav_bytes, _ = self._pending_playback.popleft()
+                self._metrics.mark_audio_play_started()
+                self._sink.play(wav_bytes)
+        finally:
+            self._draining = False
+
+
+class FacePlaybackEngine:
+    def __init__(self, metrics: PlaybackMetrics) -> None:
+        self._metrics = metrics
+        self._queued_chunks: dict[str, dict[str, object]] = {}
+
+    @property
+    def buffered_chunk_count(self) -> int:
+        return len(self._queued_chunks)
+
+    def enqueue_frames(
+        self,
+        chunk_id: str,
+        payload: dict[str, object],
+        generation_epoch: int | None,
+    ) -> None:
+        self._queued_chunks[chunk_id] = payload
+        self._metrics.mark_ue5_frame_buffered()
+
+    def clear(self) -> None:
+        self._queued_chunks.clear()
+        self._metrics.mark_face_buffer_cleared()
+
+
+@dataclass
+class PendingTTS:
+    chunk_id: str
+    segment_id: str
+    byte_length: int
+    format: str
+    generation_epoch: int | None
+
+
+@dataclass
+class PendingDiscardTTSBinary:
+    byte_length: int
+    format: str
+
+
+class LocalDemoReceiver:
+    def __init__(
+        self,
+        output_dir: Path,
+        audio: AudioPlaybackEngine,
+        face: FacePlaybackEngine,
+        *,
+        session_id: UUID | None = None,
+        turn_id: UUID | None = None,
+        clock: Callable[[], float] = perf_counter,
+    ) -> None:
+        self.output_dir = Path(output_dir)
+        self.audio = audio
+        self.face = face
+        self.session_id = session_id
+        self.turn_id = turn_id
+        self._clock = clock
+        self._started_at = clock()
+        self._metrics = audio.metrics
+        self.next_sequence = 1
+        self.pending_tts: PendingTTS | None = None
+        self._discard_next_tts_binary: PendingDiscardTTSBinary | None = None
+        self.next_ue5_frame_index_by_segment: dict[str, int] = {}
+        self.terminal_event: str | None = None
+        self.summary: dict[str, object] = {
+            "events": 0,
+            "tts_chunks": 0,
+            "ue5_chunks": 0,
+            "terminal_event": None,
+            "terminal_event_ms": None,
+            "event_counts": {},
+            "event_first_ms": {},
+            "latest_generation_epoch": None,
+            "playback_stop_count": 0,
+            "stale_drop_count": 0,
+            "stale_face_drop_count": 0,
+            "old_turn_face_leak_count": 0,
+        }
+        (self.output_dir / "tts").mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "ue5").mkdir(parents=True, exist_ok=True)
+
+    def accept_json(self, envelope: dict[str, object]) -> None:
+        self._validate_envelope(envelope)
+        received_ms = self._elapsed_ms()
+        event_type = str(envelope["type"])
+        payload = envelope.get("payload")
+        if not isinstance(payload, dict):
+            raise ProtocolError("server event payload must be an object")
+
+        self.summary["events"] = int(self.summary["events"]) + 1
+        self._record_event_count(event_type)
+        self._record_first_event(event_type, received_ms)
+        event_epoch = self._event_generation_epoch(envelope, payload)
+        if self._is_stale_generation(event_epoch):
+            self.summary["stale_drop_count"] = int(self.summary["stale_drop_count"]) + 1
+            if event_type == "server.tts.audio":
+                self._metrics.mark_stale_audio_dropped()
+                self._accept_stale_tts_metadata(payload)
+                return
+            if event_type in {"server.face.frames", "server.ue5.frames"}:
+                self.summary["stale_face_drop_count"] = (
+                    int(self.summary["stale_face_drop_count"]) + 1
+                )
+                self.summary["old_turn_face_leak_count"] = (
+                    int(self.summary["old_turn_face_leak_count"]) + 1
+                )
+                self._metrics.mark_stale_face_dropped()
+            return
+
+        self._record_generation_epoch(event_epoch)
+        if event_type == "server.tts.audio":
+            self._accept_tts_metadata(payload)
+            return
+        if event_type == "server.ue5.frames":
+            self._accept_ue5_frames(payload, event_epoch)
+            return
+        if event_type == "server.playback.stop":
+            self._metrics.mark_playback_stop_received()
+            self._clear_pending_playback()
+            self.summary["playback_stop_count"] = int(self.summary["playback_stop_count"]) + 1
+            return
+        if event_type == "server.turn.cancelled":
+            self._metrics.mark_playback_stop_received()
+            self._clear_pending_playback()
+            self._mark_terminal(event_type, received_ms)
+            return
+        if event_type in TERMINAL_TYPES:
+            self._mark_terminal(event_type, received_ms)
+
+    def accept_binary(self, payload: bytes) -> None:
+        discard_pending = self._discard_next_tts_binary
+        if discard_pending is not None:
+            self._discard_next_tts_binary = None
+            self._validate_tts_binary(payload, byte_length=discard_pending.byte_length, format_name=discard_pending.format)
+            return
+        pending = self.pending_tts
+        if pending is None:
+            raise ProtocolError("binary frame arrived without server.tts.audio metadata")
+        self._validate_tts_binary(payload, byte_length=pending.byte_length, format_name=pending.format)
+
+        (self.output_dir / "tts" / f"{pending.chunk_id}.wav").write_bytes(payload)
+        self.audio.enqueue_wav(pending.chunk_id, payload, generation_epoch=pending.generation_epoch)
+        self.summary["tts_chunks"] = int(self.summary["tts_chunks"]) + 1
+        self.pending_tts = None
+
+    def finish(self) -> None:
+        metrics = self._metrics.to_dict()
+        summary = {**self.summary, **metrics}
+        (self.output_dir / "client_playback_metrics.json").write_text(
+            json.dumps(metrics, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (self.output_dir / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _validate_envelope(self, envelope: dict[str, object]) -> None:
+        if envelope.get("protocol") != "bionic-head-stream-v1":
+            raise ProtocolError("unexpected protocol")
+        sequence = envelope.get("sequence")
+        if sequence != self.next_sequence:
+            raise ProtocolError(f"expected server sequence {self.next_sequence}, got {sequence}")
+        self.next_sequence += 1
+
+        session_id = UUID(str(envelope["session_id"]))
+        turn_id = envelope.get("turn_id")
+        parsed_turn_id = UUID(str(turn_id)) if turn_id is not None else None
+        if self.session_id is None:
+            self.session_id = session_id
+        if session_id != self.session_id:
+            raise ProtocolError("server event session_id does not match")
+        if parsed_turn_id is not None:
+            if self.turn_id is None:
+                self.turn_id = parsed_turn_id
+            elif parsed_turn_id != self.turn_id:
+                raise ProtocolError("server event turn_id does not match")
+
+    def _accept_tts_metadata(self, payload: dict[str, object]) -> None:
+        if self.pending_tts is not None or self._discard_next_tts_binary is not None:
+            raise ProtocolError("previous server.tts.audio is still waiting for binary")
+        byte_length = self._require_tts_byte_length(payload)
+        self._metrics.mark_tts_received()
+        self.pending_tts = PendingTTS(
+            chunk_id=str(payload.get("chunk_id", "chunk")),
+            segment_id=str(payload.get("segment_id", payload.get("chunk_id", "chunk"))),
+            byte_length=byte_length,
+            format=str(payload.get("format", "")),
+            generation_epoch=self._payload_generation_epoch(payload),
+        )
+
+    def _accept_stale_tts_metadata(self, payload: dict[str, object]) -> None:
+        if self.pending_tts is not None or self._discard_next_tts_binary is not None:
+            raise ProtocolError("previous server.tts.audio is still waiting for binary")
+        self._discard_next_tts_binary = PendingDiscardTTSBinary(
+            byte_length=self._require_tts_byte_length(payload),
+            format=str(payload.get("format", "")),
+        )
+
+    def _accept_ue5_frames(self, payload: dict[str, object], generation_epoch: int | None) -> None:
+        chunk_id = str(payload.get("chunk_id", f"ue5-{self.summary['ue5_chunks']}"))
+        start = payload.get("start_frame_index")
+        frame_count = payload.get("frame_count")
+        if not isinstance(start, int) or not isinstance(frame_count, int):
+            raise ProtocolError("server.ue5.frames requires start_frame_index and frame_count")
+        segment_id = str(payload.get("segment_id") or self._segment_id_for_ue5_chunk(chunk_id))
+        expected_start = self.next_ue5_frame_index_by_segment.get(segment_id, 0)
+        if start != expected_start:
+            raise ProtocolError("server.ue5.frames has a gap or overlap")
+        (self.output_dir / "ue5" / f"{chunk_id}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.face.enqueue_frames(chunk_id, payload, generation_epoch=generation_epoch)
+        self.next_ue5_frame_index_by_segment[segment_id] = start + frame_count
+        self.summary["ue5_chunks"] = int(self.summary["ue5_chunks"]) + 1
+
+    def _clear_pending_playback(self) -> None:
+        self.pending_tts = None
+        self.audio.stop()
+        self.audio.clear()
+        self.face.clear()
+        self.next_ue5_frame_index_by_segment.clear()
+
+    def _require_tts_byte_length(self, payload: dict[str, object]) -> int:
+        byte_length = payload.get("byte_length")
+        if not isinstance(byte_length, int) or byte_length < 1:
+            raise ProtocolError("server.tts.audio byte_length must be positive")
+        return byte_length
+
+    def _validate_tts_binary(self, payload: bytes, *, byte_length: int, format_name: str) -> None:
+        if len(payload) != byte_length:
+            self.pending_tts = None
+            raise ProtocolError("binary frame length does not match server.tts.audio metadata")
+        if format_name != "wav":
+            self.pending_tts = None
+            raise ProtocolError("only WAV TTS chunks are supported")
+
+    def _segment_id_for_ue5_chunk(self, chunk_id: str) -> str:
+        prefix, separator, suffix = chunk_id.rpartition("-")
+        if separator and suffix.isdigit():
+            return prefix
+        return chunk_id
+
+    def _mark_terminal(self, event_type: str, received_ms: float) -> None:
+        self.terminal_event = event_type
+        self.summary["terminal_event"] = event_type
+        self.summary["terminal_event_ms"] = received_ms
+        self.finish()
+
+    def _record_event_count(self, event_type: str) -> None:
+        counts = self.summary["event_counts"]
+        if isinstance(counts, dict):
+            counts[event_type] = int(counts.get(event_type, 0)) + 1
+
+    def _record_first_event(self, event_type: str, received_ms: float) -> None:
+        first_events = self.summary["event_first_ms"]
+        if isinstance(first_events, dict) and event_type not in first_events:
+            first_events[event_type] = received_ms
+
+    def _event_generation_epoch(
+        self,
+        envelope: dict[str, object],
+        payload: dict[str, object],
+    ) -> int | None:
+        value = envelope.get("generation_epoch")
+        if not isinstance(value, int):
+            value = payload.get("generation_epoch")
+        return value if isinstance(value, int) else None
+
+    def _payload_generation_epoch(self, payload: dict[str, object]) -> int | None:
+        value = payload.get("generation_epoch")
+        return value if isinstance(value, int) else None
+
+    def _is_stale_generation(self, event_epoch: int | None) -> bool:
+        latest = self.summary["latest_generation_epoch"]
+        return isinstance(event_epoch, int) and isinstance(latest, int) and event_epoch < latest
+
+    def _record_generation_epoch(self, event_epoch: int | None) -> None:
+        if event_epoch is None:
+            return
+        latest = self.summary["latest_generation_epoch"]
+        if not isinstance(latest, int) or event_epoch > latest:
+            self.summary["latest_generation_epoch"] = event_epoch
+
+    def _elapsed_ms(self) -> float:
+        return round((self._clock() - self._started_at) * 1000.0, 3)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the local demo WebSocket client.")
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--wav", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--chunk-ms", type=int, default=40)
+    parser.add_argument("--cancel-after-ms", type=int)
+    parser.add_argument(
+        "--play-audio",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    return parser
+
+
+async def run_local_demo(
+    url: str,
+    wav_path: Path,
+    output_dir: Path,
+    chunk_ms: int,
+    play_audio: bool,
+    cancel_after_ms: int | None = None,
+) -> str:
+    try:
+        import websockets
+    except ImportError as exc:
+        raise SystemExit("websockets is required; install the client extra") from exc
+
+    pcm = read_pcm16_from_wav(wav_path)
+    session_id = uuid4()
+    turn_id = uuid4()
+    audio_sink: AudioSink = SoundDeviceAudioSink() if play_audio else MemoryAudioSink()
+    metrics = PlaybackMetrics(clock=perf_counter)
+    receiver = LocalDemoReceiver(
+        output_dir,
+        AudioPlaybackEngine(metrics, sink=audio_sink),
+        FacePlaybackEngine(metrics),
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+    sequence = 1
+    cancel_task: asyncio.Task[None] | None = None
+
+    async with websockets.connect(url) as websocket:
+        await websocket.send(
+            json.dumps(
+                client_event(
+                    "client.session.start",
+                    session_id=session_id,
+                    turn_id=None,
+                    sequence=sequence,
+                    payload={"client_name": "local_demo_client"},
+                )
+            )
+        )
+        sequence += 1
+
+        first = await websocket.recv()
+        if isinstance(first, bytes):
+            raise ProtocolError("expected server.session.ready JSON")
+        first_event = json.loads(first)
+        if first_event.get("type") != "server.session.ready":
+            raise ProtocolError("expected first server event to be server.session.ready")
+        receiver.accept_json(first_event)
+        session_id = receiver.session_id or session_id
+        turn_id = receiver.turn_id or turn_id
+
+        await websocket.send(
+            json.dumps(
+                client_event(
+                    "client.audio.start",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    sequence=sequence,
+                    payload={"sample_rate": 16000, "channels": 1, "sample_width_bytes": 2},
+                )
+            )
+        )
+        sequence += 1
+        for chunk in pcm_chunks(pcm, chunk_ms=chunk_ms):
+            await websocket.send(
+                json.dumps(
+                    client_event(
+                        "client.audio.chunk",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        sequence=sequence,
+                        payload={
+                            "byte_length": len(chunk),
+                            "duration_ms": int(len(chunk) / 2 / 16000 * 1000),
+                        },
+                    )
+                )
+            )
+            sequence += 1
+            await websocket.send(chunk)
+
+        await websocket.send(
+            json.dumps(
+                client_event(
+                    "client.audio.end",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    sequence=sequence,
+                    payload={"reason": "client_end"},
+                )
+            )
+        )
+        sequence += 1
+
+        if cancel_after_ms is not None:
+            cancel_sequence = sequence
+
+            async def send_cancel() -> None:
+                await websocket.send(
+                    json.dumps(
+                        client_event(
+                            "client.turn.cancel",
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            sequence=cancel_sequence,
+                            payload={"reason": "client_timeout"},
+                        )
+                    )
+                )
+
+            if cancel_after_ms <= 0:
+                await send_cancel()
+            else:
+                async def delayed_cancel() -> None:
+                    await asyncio.sleep(cancel_after_ms / 1000.0)
+                    await send_cancel()
+
+                cancel_task = asyncio.create_task(delayed_cancel())
+
+        while receiver.terminal_event is None:
+            message = await websocket.recv()
+            if isinstance(message, bytes):
+                receiver.accept_binary(message)
+            else:
+                receiver.accept_json(json.loads(message))
+
+    if cancel_task is not None and not cancel_task.done():
+        cancel_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cancel_task
+    receiver.finish()
+    return str(receiver.terminal_event)
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    terminal_event = asyncio.run(
+        run_local_demo(
+            url=args.url,
+            wav_path=args.wav,
+            output_dir=args.output_dir,
+            chunk_ms=args.chunk_ms,
+            play_audio=args.play_audio,
+            cancel_after_ms=args.cancel_after_ms,
+        )
+    )
+    print(
+        json.dumps(
+            {
+                "terminal_event": terminal_event,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
