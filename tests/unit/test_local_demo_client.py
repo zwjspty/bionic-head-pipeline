@@ -167,6 +167,60 @@ def test_receiver_playback_stop_clears_buffers(tmp_path, server_envelope) -> Non
     assert metrics.to_dict()["client_playback_stop_received_ms"] == 0.0
 
 
+def test_receiver_playback_stop_clears_pending_tts_binary(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+            },
+        )
+    )
+    receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=1))
+
+    with pytest.raises(ProtocolError, match="binary frame arrived without server.tts.audio metadata"):
+        receiver.accept_binary(b"RIFF....WAVE")
+
+    assert receiver.pending_tts is None
+    assert not (tmp_path / "tts" / "chunk-1.wav").exists()
+    assert audio.queued_count == 0
+
+
+def test_receiver_turn_cancelled_clears_pending_tts_binary(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+            },
+        )
+    )
+    receiver.accept_json(server_envelope("server.turn.cancelled", payload={}, generation_epoch=1))
+
+    with pytest.raises(ProtocolError, match="binary frame arrived without server.tts.audio metadata"):
+        receiver.accept_binary(b"RIFF....WAVE")
+
+    assert receiver.pending_tts is None
+    assert not (tmp_path / "tts" / "chunk-1.wav").exists()
+    assert audio.queued_count == 0
+
+
 def test_receiver_drops_stale_generation_audio_and_face(tmp_path, server_envelope) -> None:
     metrics = PlaybackMetrics(clock=lambda: 0.0)
     audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
@@ -206,6 +260,61 @@ def test_receiver_drops_stale_generation_audio_and_face(tmp_path, server_envelop
     assert receiver.summary["old_turn_face_leak_count"] == 1
 
 
+def test_receiver_validates_ue5_frame_sequence(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(
+        server_envelope(
+            "server.ue5.frames",
+            payload={
+                "chunk_id": "segment-1-0000",
+                "segment_id": "segment-1",
+                "start_frame_index": 0,
+                "frame_count": 1,
+                "frames": [{"frame_index": 0}],
+            },
+        )
+    )
+
+    with pytest.raises(ProtocolError, match="server.ue5.frames has a gap or overlap"):
+        receiver.accept_json(
+            server_envelope(
+                "server.ue5.frames",
+                payload={
+                    "chunk_id": "segment-1-0001",
+                    "segment_id": "segment-1",
+                    "start_frame_index": 0,
+                    "frame_count": 1,
+                    "frames": [{"frame_index": 0}],
+                },
+            )
+        )
+
+
+def test_receiver_requires_ue5_start_frame_index_and_frame_count(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    with pytest.raises(
+        ProtocolError, match="server.ue5.frames requires start_frame_index and frame_count"
+    ):
+        receiver.accept_json(
+            server_envelope(
+                "server.ue5.frames",
+                payload={
+                    "chunk_id": "segment-1-0000",
+                    "segment_id": "segment-1",
+                    "frames": [{"frame_index": 0}],
+                },
+            )
+        )
+
+
 def test_receiver_finish_writes_summary_and_terminal_event(tmp_path, server_envelope) -> None:
     metrics = PlaybackMetrics(clock=lambda: 0.0)
     audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
@@ -230,6 +339,8 @@ def test_receiver_finish_writes_summary_and_terminal_event(tmp_path, server_enve
             payload={
                 "chunk_id": "ue5-1",
                 "segment_id": "segment-1",
+                "start_frame_index": 0,
+                "frame_count": 1,
                 "frames": [{"frame_index": 0}],
             },
         )

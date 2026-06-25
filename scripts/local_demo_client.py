@@ -83,6 +83,10 @@ class AudioPlaybackEngine:
         self._queued_chunks: dict[str, bytes] = {}
 
     @property
+    def metrics(self) -> PlaybackMetrics:
+        return self._metrics
+
+    @property
     def queued_count(self) -> int:
         return len(self._queued_chunks)
 
@@ -148,9 +152,10 @@ class LocalDemoReceiver:
         self.turn_id = turn_id
         self._clock = clock
         self._started_at = clock()
-        self._metrics = audio._metrics
+        self._metrics = audio.metrics
         self.next_sequence = 1
         self.pending_tts: PendingTTS | None = None
+        self.next_ue5_frame_index_by_segment: dict[str, int] = {}
         self.terminal_event: str | None = None
         self.summary: dict[str, object] = {
             "events": 0,
@@ -201,16 +206,12 @@ class LocalDemoReceiver:
             return
         if event_type == "server.playback.stop":
             self._metrics.mark_playback_stop_received()
-            self.audio.stop()
-            self.audio.clear()
-            self.face.clear()
+            self._clear_pending_playback()
             self.summary["playback_stop_count"] = int(self.summary["playback_stop_count"]) + 1
             return
         if event_type == "server.turn.cancelled":
             self._metrics.mark_playback_stop_received()
-            self.audio.stop()
-            self.audio.clear()
-            self.face.clear()
+            self._clear_pending_playback()
             self._mark_terminal(event_type, received_ms)
             return
         if event_type in TERMINAL_TYPES:
@@ -276,12 +277,33 @@ class LocalDemoReceiver:
 
     def _accept_ue5_frames(self, payload: dict[str, object], generation_epoch: int | None) -> None:
         chunk_id = str(payload.get("chunk_id", f"ue5-{self.summary['ue5_chunks']}"))
+        start = payload.get("start_frame_index")
+        frame_count = payload.get("frame_count")
+        if not isinstance(start, int) or not isinstance(frame_count, int):
+            raise ProtocolError("server.ue5.frames requires start_frame_index and frame_count")
+        segment_id = str(payload.get("segment_id") or self._segment_id_for_ue5_chunk(chunk_id))
+        expected_start = self.next_ue5_frame_index_by_segment.get(segment_id, 0)
+        if start != expected_start:
+            raise ProtocolError("server.ue5.frames has a gap or overlap")
         (self.output_dir / "ue5" / f"{chunk_id}.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         self.face.enqueue_frames(chunk_id, payload, generation_epoch=generation_epoch)
+        self.next_ue5_frame_index_by_segment[segment_id] = start + frame_count
         self.summary["ue5_chunks"] = int(self.summary["ue5_chunks"]) + 1
+
+    def _clear_pending_playback(self) -> None:
+        self.pending_tts = None
+        self.audio.stop()
+        self.audio.clear()
+        self.face.clear()
+
+    def _segment_id_for_ue5_chunk(self, chunk_id: str) -> str:
+        prefix, separator, suffix = chunk_id.rpartition("-")
+        if separator and suffix.isdigit():
+            return prefix
+        return chunk_id
 
     def _mark_terminal(self, event_type: str, received_ms: float) -> None:
         self.terminal_event = event_type
