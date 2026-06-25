@@ -231,9 +231,17 @@ class SoundDeviceAudioSink:
 
 
 class AudioPlaybackEngine:
-    def __init__(self, metrics: PlaybackMetrics, sink: AudioSink | None = None) -> None:
+    def __init__(
+        self,
+        metrics: PlaybackMetrics,
+        sink: AudioSink | None = None,
+        *,
+        on_first_play: Callable[[], None] | None = None,
+    ) -> None:
         self._metrics = metrics
         self._sink = sink or MemoryAudioSink()
+        self._on_first_play = on_first_play
+        self._first_play_callback_fired = False
         self._queued_chunks: dict[str, bytes] = {}
         self._pending_playback: deque[tuple[str, bytes, int | None]] = deque()
         self._draining = False
@@ -270,6 +278,9 @@ class AudioPlaybackEngine:
             while self._pending_playback:
                 _, wav_bytes, _ = self._pending_playback.popleft()
                 self._metrics.mark_audio_play_started()
+                if not self._first_play_callback_fired and self._on_first_play is not None:
+                    self._first_play_callback_fired = True
+                    self._on_first_play()
                 self._sink.play(wav_bytes)
         finally:
             self._draining = False
@@ -595,17 +606,49 @@ async def run_local_demo(
     turn_id = uuid4()
     audio_sink: AudioSink = SoundDeviceAudioSink() if play_audio else MemoryAudioSink()
     metrics = PlaybackMetrics(clock=perf_counter)
+    sequence = 1
+    cancel_task: asyncio.Task[None] | None = None
+    cancel_sent = False
+    cancel_websocket = None
+
+    async def send_cancel_after_playback_delay() -> None:
+        nonlocal sequence, cancel_sent
+        if cancel_after_ms is not None and cancel_after_ms > 0:
+            await asyncio.sleep(cancel_after_ms / 1000.0)
+        if cancel_sent or cancel_websocket is None:
+            return
+        cancel_sent = True
+        current_sequence = sequence
+        sequence += 1
+        metrics.mark_client_interrupt_sent()
+        await cancel_websocket.send(
+            json.dumps(
+                client_event(
+                    "client.turn.cancel",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    sequence=current_sequence,
+                    payload={"reason": "client_playback_interrupt"},
+                )
+            )
+        )
+
+    def schedule_cancel_on_first_play() -> None:
+        nonlocal cancel_task
+        if cancel_after_ms is None or cancel_task is not None:
+            return
+        cancel_task = asyncio.create_task(send_cancel_after_playback_delay())
+
     receiver = LocalDemoReceiver(
         output_dir,
-        AudioPlaybackEngine(metrics, sink=audio_sink),
+        AudioPlaybackEngine(metrics, sink=audio_sink, on_first_play=schedule_cancel_on_first_play),
         FacePlaybackEngine(metrics),
         session_id=session_id,
         turn_id=turn_id,
     )
-    sequence = 1
-    cancel_task: asyncio.Task[None] | None = None
 
     async with websockets.connect(url) as websocket:
+        cancel_websocket = websocket
         await websocket.send(
             json.dumps(
                 client_event(
@@ -672,37 +715,14 @@ async def run_local_demo(
         )
         sequence += 1
 
-        if cancel_after_ms is not None:
-            cancel_sequence = sequence
-
-            async def send_cancel() -> None:
-                await websocket.send(
-                    json.dumps(
-                        client_event(
-                            "client.turn.cancel",
-                            session_id=session_id,
-                            turn_id=turn_id,
-                            sequence=cancel_sequence,
-                            payload={"reason": "client_timeout"},
-                        )
-                    )
-                )
-
-            if cancel_after_ms <= 0:
-                await send_cancel()
-            else:
-                async def delayed_cancel() -> None:
-                    await asyncio.sleep(cancel_after_ms / 1000.0)
-                    await send_cancel()
-
-                cancel_task = asyncio.create_task(delayed_cancel())
-
         while receiver.terminal_event is None:
             message = await websocket.recv()
             if isinstance(message, bytes):
                 receiver.accept_binary(message)
             else:
                 receiver.accept_json(json.loads(message))
+            if cancel_task is not None and not cancel_task.done():
+                await asyncio.sleep(0)
 
     if cancel_task is not None and not cancel_task.done():
         cancel_task.cancel()
