@@ -138,9 +138,12 @@ PYTHONPATH=src .venv/bin/python scripts/render_emotalk_grey_head.py \
   --face-npy /tmp/my-bionic-face.npy \
   --audio-wav /tmp/my-bionic-reply.wav \
   --output /tmp/my-bionic-grey-head.mp4 \
+  --resolution 720 \
   --name my-bionic \
   --work-dir /tmp/my-bionic-grey-render
 ```
+
+`--resolution 720` is accepted as shorthand for a square `720x720` render.
 
 Play it:
 

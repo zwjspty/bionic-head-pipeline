@@ -97,3 +97,15 @@ def test_builds_ffmpeg_command_for_numbered_png_frames(tmp_path: Path) -> None:
         "-shortest",
         str(tmp_path / "preview.mp4"),
     ]
+
+
+def test_builds_ffmpeg_command_accepts_square_resolution_shorthand(tmp_path: Path) -> None:
+    command = build_ffmpeg_command(
+        frame_dir=tmp_path / "preview",
+        audio_wav=tmp_path / "reply.wav",
+        output_mp4=tmp_path / "preview.mp4",
+        fps=30,
+        resolution="720",
+    )
+
+    assert command[command.index("-s") + 1] == "720x720"

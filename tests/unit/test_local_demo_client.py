@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 import wave
 from collections.abc import Callable
@@ -154,6 +156,26 @@ def test_build_parser_defaults_to_audio_playback() -> None:
     )
 
     assert args.play_audio is True
+
+
+def test_local_demo_client_help_runs_when_executed_by_path_with_src_pythonpath() -> None:
+    env = {
+        **os.environ,
+        "PYTHONPATH": "src",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "scripts/local_demo_client.py", "--help"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--no-play-audio" in result.stdout
 
 
 def _wav_bytes_from_int16_samples(samples: list[int], sample_rate: int = 16000) -> bytes:
