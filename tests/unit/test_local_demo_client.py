@@ -1,8 +1,22 @@
+import json
 from collections.abc import Callable
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
 
 import pytest
 
-from scripts.local_demo_client import AudioPlaybackEngine, FacePlaybackEngine, MemoryAudioSink, PlaybackMetrics
+from scripts.local_demo_client import (
+    AudioPlaybackEngine,
+    FacePlaybackEngine,
+    LocalDemoReceiver,
+    MemoryAudioSink,
+    PlaybackMetrics,
+    ProtocolError,
+)
+
+
+SESSION_ID = UUID("00000000-0000-0000-0000-000000000011")
+TURN_ID = UUID("00000000-0000-0000-0000-000000000012")
 
 
 class FakeClock:
@@ -19,6 +33,39 @@ class FakeClock:
 @pytest.fixture
 def fake_clock() -> FakeClock:
     return FakeClock()
+
+
+@pytest.fixture
+def server_envelope():
+    next_sequence = 1
+
+    def _build(
+        event_type: str,
+        *,
+        payload: dict[str, object],
+        generation_epoch: int = 0,
+    ) -> dict[str, object]:
+        nonlocal next_sequence
+        envelope = {
+            "protocol": "bionic-head-stream-v1",
+            "type": event_type,
+            "event_id": str(uuid4()),
+            "session_id": str(SESSION_ID),
+            "turn_id": str(TURN_ID),
+            "sequence": next_sequence,
+            "generation_epoch": generation_epoch,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "session_id": str(SESSION_ID),
+                "turn_id": str(TURN_ID),
+                "generation_epoch": generation_epoch,
+                **payload,
+            },
+        }
+        next_sequence += 1
+        return envelope
+
+    return _build
 
 
 def test_audio_engine_enqueues_wav_and_records_metrics(fake_clock: Callable[[], float]) -> None:
@@ -53,3 +100,144 @@ def test_stop_clears_audio_and_face_buffers(fake_clock: Callable[[], float]) -> 
     assert face.buffered_chunk_count == 0
     assert summary["client_audio_stopped_ms"] == 50.0
     assert summary["client_face_buffer_cleared_ms"] == 50.0
+
+
+def test_receiver_accepts_tts_metadata_then_binary(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+                "generation_epoch": 0,
+            },
+            generation_epoch=0,
+        )
+    )
+    receiver.accept_binary(b"RIFF....WAVE")
+
+    assert (tmp_path / "tts" / "chunk-1.wav").read_bytes() == b"RIFF....WAVE"
+    assert audio.queued_count == 1
+
+
+def test_receiver_rejects_binary_length_mismatch(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+            },
+        )
+    )
+
+    with pytest.raises(ProtocolError):
+        receiver.accept_binary(b"short")
+
+    assert receiver.pending_tts is None
+    assert audio.queued_count == 0
+
+
+def test_receiver_playback_stop_clears_buffers(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    audio.enqueue_wav("chunk-1", b"RIFF....WAVE", generation_epoch=0)
+    face.enqueue_frames("ue5-1", {"frames": [{"frame_index": 0}]}, generation_epoch=0)
+    receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=1))
+
+    assert audio.queued_count == 0
+    assert face.buffered_chunk_count == 0
+    assert metrics.to_dict()["client_playback_stop_received_ms"] == 0.0
+
+
+def test_receiver_drops_stale_generation_audio_and_face(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=2))
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "stale-audio",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+            },
+            generation_epoch=1,
+        )
+    )
+    receiver.accept_json(
+        server_envelope(
+            "server.ue5.frames",
+            payload={
+                "chunk_id": "stale-face",
+                "segment_id": "segment-1",
+                "frames": [{"frame_index": 0}],
+            },
+            generation_epoch=1,
+        )
+    )
+
+    assert receiver.pending_tts is None
+    assert audio.queued_count == 0
+    assert face.buffered_chunk_count == 0
+    assert receiver.summary["stale_drop_count"] == 2
+    assert receiver.summary["stale_face_drop_count"] == 1
+    assert receiver.summary["old_turn_face_leak_count"] == 1
+
+
+def test_receiver_finish_writes_summary_and_terminal_event(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+            },
+        )
+    )
+    receiver.accept_binary(b"RIFF....WAVE")
+    receiver.accept_json(
+        server_envelope(
+            "server.ue5.frames",
+            payload={
+                "chunk_id": "ue5-1",
+                "segment_id": "segment-1",
+                "frames": [{"frame_index": 0}],
+            },
+        )
+    )
+    receiver.accept_json(server_envelope("server.pipeline.done", payload={}))
+
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["tts_chunks"] == 1
+    assert summary["ue5_chunks"] == 1
+    assert summary["terminal_event"] == "server.pipeline.done"
+    assert summary["client_audio_enqueued_count"] == 1
