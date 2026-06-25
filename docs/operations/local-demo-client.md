@@ -13,7 +13,7 @@ PYTHONPATH=src BIONIC_CONFIG=/tmp/bionic-local-emotalk-gpu.json \
   --factory --host 127.0.0.1 --port 8005
 ```
 
-Run no-audio local demo (safe default for CI-like/automation environments):
+Run no-audio local demo (recommended for headless smoke, CI-like, or other automation environments):
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/local_demo_client.py \
@@ -24,10 +24,10 @@ PYTHONPATH=src .venv/bin/python scripts/local_demo_client.py \
   --no-play-audio
 ```
 
-Run with optional local playback (requires `client-audio` extra):
+Run with optional local playback (fresh install needs both `client` and `client-audio` extras):
 
 ```bash
-.venv/bin/python -m pip install -e ".[client-audio]"
+.venv/bin/python -m pip install -e ".[client,client-audio]"
 PYTHONPATH=src .venv/bin/python scripts/local_demo_client.py \
   --url ws://127.0.0.1:8005/pipeline/stream \
   --wav /tmp/bionic-demo-input.wav \
@@ -38,7 +38,8 @@ PYTHONPATH=src .venv/bin/python scripts/local_demo_client.py \
 
 Generated artifacts:
 
-- `summary.json` (includes playback counters/timestamps from `PlaybackMetrics`)
+- `summary.json` (embeds playback counters/timestamps from `PlaybackMetrics`)
+- `client_playback_metrics.json` (standalone copy of the client playback metrics)
 - `tts/{chunk_id}.wav`
 - `ue5/{chunk_id}.json`
 
@@ -46,8 +47,9 @@ For no-audio verification, expect:
 
 - CLI prints `{"terminal_event":"server.pipeline.done", ...}`
 - `summary.json` exists
+- `client_playback_metrics.json` exists
 - `tts/*.wav` exists
 - `ue5/*.json` exists
 - `terminal_event` is `server.pipeline.done`
 
-Note: if playback is enabled, `sounddevice` is optional at runtime and used only when `--play-audio` is set.
+Note: `--play-audio` remains the default, but `--no-play-audio` is the preferred flag for headless smoke runs. If playback is enabled, `sounddevice` is optional at runtime and used only when `--play-audio` is set.

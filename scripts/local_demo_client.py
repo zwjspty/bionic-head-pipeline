@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import wave
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,40 +40,102 @@ class PlaybackMetrics:
     def __init__(self, clock: Callable[[], float]) -> None:
         self._clock = clock
         self._started_at = clock()
+        self.client_tts_received_ms: float | None = None
         self.client_audio_enqueued_count = 0
         self.client_audio_play_start_ms: float | None = None
         self.client_audio_stopped_ms: float | None = None
+        self.client_ue5_first_frame_received_ms: float | None = None
+        self.client_face_buffered_chunk_count = 0
+        self.client_face_first_frame_displayed_ms: float | None = None
+        self.client_audio_face_offset_ms: float | None = None
         self.client_face_buffer_cleared_ms: float | None = None
         self.client_playback_stop_received_ms: float | None = None
+        self.client_interrupt_to_audio_stop_ms: float | None = None
+        self.client_stale_audio_drop_count = 0
+        self.client_stale_face_drop_count = 0
+
+    def mark_tts_received(self) -> None:
+        if self.client_tts_received_ms is None:
+            self.client_tts_received_ms = self._elapsed_ms()
 
     def mark_audio_enqueued(self, generation_epoch: int | None = None) -> None:
+        self.client_audio_enqueued_count += 1
+
+    def mark_audio_play_started(self) -> None:
         if self.client_audio_play_start_ms is None:
             self.client_audio_play_start_ms = self._elapsed_ms()
-        self.client_audio_enqueued_count += 1
+            self._update_audio_face_offset()
 
     def mark_audio_stopped(self) -> None:
         if self.client_audio_stopped_ms is None:
             self.client_audio_stopped_ms = self._elapsed_ms()
+            self._update_interrupt_to_audio_stop()
 
     def mark_playback_stop_received(self) -> None:
         if self.client_playback_stop_received_ms is None:
             self.client_playback_stop_received_ms = self._elapsed_ms()
+            self._update_interrupt_to_audio_stop()
+
+    def mark_ue5_frame_buffered(self) -> None:
+        received_ms = self._elapsed_ms()
+        self.client_face_buffered_chunk_count += 1
+        if self.client_ue5_first_frame_received_ms is None:
+            self.client_ue5_first_frame_received_ms = received_ms
+        if self.client_face_first_frame_displayed_ms is None:
+            self.client_face_first_frame_displayed_ms = received_ms
+        self._update_audio_face_offset()
 
     def mark_face_buffer_cleared(self) -> None:
         if self.client_face_buffer_cleared_ms is None:
             self.client_face_buffer_cleared_ms = self._elapsed_ms()
 
+    def mark_stale_audio_dropped(self) -> None:
+        self.client_stale_audio_drop_count += 1
+
+    def mark_stale_face_dropped(self) -> None:
+        self.client_stale_face_drop_count += 1
+
     def to_dict(self) -> dict[str, object]:
         return {
+            "client_tts_received_ms": self.client_tts_received_ms,
             "client_audio_enqueued_count": self.client_audio_enqueued_count,
             "client_audio_play_start_ms": self.client_audio_play_start_ms,
             "client_audio_stopped_ms": self.client_audio_stopped_ms,
+            "client_ue5_first_frame_received_ms": self.client_ue5_first_frame_received_ms,
+            "client_face_buffered_chunk_count": self.client_face_buffered_chunk_count,
+            "client_face_first_frame_displayed_ms": self.client_face_first_frame_displayed_ms,
+            "client_audio_face_offset_ms": self.client_audio_face_offset_ms,
             "client_playback_stop_received_ms": self.client_playback_stop_received_ms,
+            "client_interrupt_to_audio_stop_ms": self.client_interrupt_to_audio_stop_ms,
             "client_face_buffer_cleared_ms": self.client_face_buffer_cleared_ms,
+            "client_stale_audio_drop_count": self.client_stale_audio_drop_count,
+            "client_stale_face_drop_count": self.client_stale_face_drop_count,
         }
 
     def _elapsed_ms(self) -> float:
         return round((self._clock() - self._started_at) * 1000.0, 3)
+
+    def _update_audio_face_offset(self) -> None:
+        if (
+            self.client_audio_face_offset_ms is None
+            and self.client_audio_play_start_ms is not None
+            and self.client_face_first_frame_displayed_ms is not None
+        ):
+            self.client_audio_face_offset_ms = round(
+                self.client_face_first_frame_displayed_ms - self.client_audio_play_start_ms,
+                3,
+            )
+
+    def _update_interrupt_to_audio_stop(self) -> None:
+        if (
+            self.client_interrupt_to_audio_stop_ms is None
+            and self.client_playback_stop_received_ms is not None
+            and self.client_audio_stopped_ms is not None
+        ):
+            self.client_interrupt_to_audio_stop_ms = round(
+                self.client_audio_stopped_ms - self.client_playback_stop_received_ms,
+                3,
+            )
 
 
 class MemoryAudioSink:
@@ -126,6 +189,8 @@ class AudioPlaybackEngine:
         self._metrics = metrics
         self._sink = sink or MemoryAudioSink()
         self._queued_chunks: dict[str, bytes] = {}
+        self._pending_playback: deque[tuple[str, bytes, int | None]] = deque()
+        self._draining = False
 
     @property
     def metrics(self) -> PlaybackMetrics:
@@ -137,15 +202,31 @@ class AudioPlaybackEngine:
 
     def enqueue_wav(self, chunk_id: str, wav_bytes: bytes, generation_epoch: int | None) -> None:
         self._queued_chunks[chunk_id] = wav_bytes
+        self._pending_playback.append((chunk_id, wav_bytes, generation_epoch))
         self._metrics.mark_audio_enqueued(generation_epoch)
-        self._sink.play(wav_bytes)
+        self._drain_pending_playback()
 
     def stop(self) -> None:
+        self._pending_playback.clear()
+        self._queued_chunks.clear()
         self._sink.stop()
         self._metrics.mark_audio_stopped()
 
     def clear(self) -> None:
         self._queued_chunks.clear()
+        self._pending_playback.clear()
+
+    def _drain_pending_playback(self) -> None:
+        if self._draining:
+            return
+        self._draining = True
+        try:
+            while self._pending_playback:
+                _, wav_bytes, _ = self._pending_playback.popleft()
+                self._metrics.mark_audio_play_started()
+                self._sink.play(wav_bytes)
+        finally:
+            self._draining = False
 
 
 class FacePlaybackEngine:
@@ -164,6 +245,7 @@ class FacePlaybackEngine:
         generation_epoch: int | None,
     ) -> None:
         self._queued_chunks[chunk_id] = payload
+        self._metrics.mark_ue5_frame_buffered()
 
     def clear(self) -> None:
         self._queued_chunks.clear()
@@ -177,6 +259,12 @@ class PendingTTS:
     byte_length: int
     format: str
     generation_epoch: int | None
+
+
+@dataclass
+class PendingDiscardTTSBinary:
+    byte_length: int
+    format: str
 
 
 class LocalDemoReceiver:
@@ -200,6 +288,7 @@ class LocalDemoReceiver:
         self._metrics = audio.metrics
         self.next_sequence = 1
         self.pending_tts: PendingTTS | None = None
+        self._discard_next_tts_binary: PendingDiscardTTSBinary | None = None
         self.next_ue5_frame_index_by_segment: dict[str, int] = {}
         self.terminal_event: str | None = None
         self.summary: dict[str, object] = {
@@ -233,6 +322,10 @@ class LocalDemoReceiver:
         event_epoch = self._event_generation_epoch(envelope, payload)
         if self._is_stale_generation(event_epoch):
             self.summary["stale_drop_count"] = int(self.summary["stale_drop_count"]) + 1
+            if event_type == "server.tts.audio":
+                self._metrics.mark_stale_audio_dropped()
+                self._accept_stale_tts_metadata(payload)
+                return
             if event_type in {"server.face.frames", "server.ue5.frames"}:
                 self.summary["stale_face_drop_count"] = (
                     int(self.summary["stale_face_drop_count"]) + 1
@@ -240,6 +333,7 @@ class LocalDemoReceiver:
                 self.summary["old_turn_face_leak_count"] = (
                     int(self.summary["old_turn_face_leak_count"]) + 1
                 )
+                self._metrics.mark_stale_face_dropped()
             return
 
         self._record_generation_epoch(event_epoch)
@@ -263,15 +357,15 @@ class LocalDemoReceiver:
             self._mark_terminal(event_type, received_ms)
 
     def accept_binary(self, payload: bytes) -> None:
+        discard_pending = self._discard_next_tts_binary
+        if discard_pending is not None:
+            self._discard_next_tts_binary = None
+            self._validate_tts_binary(payload, byte_length=discard_pending.byte_length, format_name=discard_pending.format)
+            return
         pending = self.pending_tts
         if pending is None:
             raise ProtocolError("binary frame arrived without server.tts.audio metadata")
-        if len(payload) != pending.byte_length:
-            self.pending_tts = None
-            raise ProtocolError("binary frame length does not match server.tts.audio metadata")
-        if pending.format != "wav":
-            self.pending_tts = None
-            raise ProtocolError("only WAV TTS chunks are supported")
+        self._validate_tts_binary(payload, byte_length=pending.byte_length, format_name=pending.format)
 
         (self.output_dir / "tts" / f"{pending.chunk_id}.wav").write_bytes(payload)
         self.audio.enqueue_wav(pending.chunk_id, payload, generation_epoch=pending.generation_epoch)
@@ -279,7 +373,12 @@ class LocalDemoReceiver:
         self.pending_tts = None
 
     def finish(self) -> None:
-        summary = {**self.summary, **self._metrics.to_dict()}
+        metrics = self._metrics.to_dict()
+        summary = {**self.summary, **metrics}
+        (self.output_dir / "client_playback_metrics.json").write_text(
+            json.dumps(metrics, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         (self.output_dir / "summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -307,17 +406,24 @@ class LocalDemoReceiver:
                 raise ProtocolError("server event turn_id does not match")
 
     def _accept_tts_metadata(self, payload: dict[str, object]) -> None:
-        if self.pending_tts is not None:
+        if self.pending_tts is not None or self._discard_next_tts_binary is not None:
             raise ProtocolError("previous server.tts.audio is still waiting for binary")
-        byte_length = payload.get("byte_length")
-        if not isinstance(byte_length, int) or byte_length < 1:
-            raise ProtocolError("server.tts.audio byte_length must be positive")
+        byte_length = self._require_tts_byte_length(payload)
+        self._metrics.mark_tts_received()
         self.pending_tts = PendingTTS(
             chunk_id=str(payload.get("chunk_id", "chunk")),
             segment_id=str(payload.get("segment_id", payload.get("chunk_id", "chunk"))),
             byte_length=byte_length,
             format=str(payload.get("format", "")),
             generation_epoch=self._payload_generation_epoch(payload),
+        )
+
+    def _accept_stale_tts_metadata(self, payload: dict[str, object]) -> None:
+        if self.pending_tts is not None or self._discard_next_tts_binary is not None:
+            raise ProtocolError("previous server.tts.audio is still waiting for binary")
+        self._discard_next_tts_binary = PendingDiscardTTSBinary(
+            byte_length=self._require_tts_byte_length(payload),
+            format=str(payload.get("format", "")),
         )
 
     def _accept_ue5_frames(self, payload: dict[str, object], generation_epoch: int | None) -> None:
@@ -344,6 +450,20 @@ class LocalDemoReceiver:
         self.audio.clear()
         self.face.clear()
         self.next_ue5_frame_index_by_segment.clear()
+
+    def _require_tts_byte_length(self, payload: dict[str, object]) -> int:
+        byte_length = payload.get("byte_length")
+        if not isinstance(byte_length, int) or byte_length < 1:
+            raise ProtocolError("server.tts.audio byte_length must be positive")
+        return byte_length
+
+    def _validate_tts_binary(self, payload: bytes, *, byte_length: int, format_name: str) -> None:
+        if len(payload) != byte_length:
+            self.pending_tts = None
+            raise ProtocolError("binary frame length does not match server.tts.audio metadata")
+        if format_name != "wav":
+            self.pending_tts = None
+            raise ProtocolError("only WAV TTS chunks are supported")
 
     def _segment_id_for_ue5_chunk(self, chunk_id: str) -> str:
         prefix, separator, suffix = chunk_id.rpartition("-")
@@ -433,6 +553,8 @@ async def run_local_demo(
         output_dir,
         AudioPlaybackEngine(metrics, sink=audio_sink),
         FacePlaybackEngine(metrics),
+        session_id=session_id,
+        turn_id=turn_id,
     )
     sequence = 1
     cancel_task: asyncio.Task[None] | None = None

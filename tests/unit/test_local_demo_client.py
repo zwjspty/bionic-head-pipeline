@@ -207,6 +207,8 @@ async def test_run_local_demo_streams_audio_and_writes_summary(
     server_envelope,
 ) -> None:
     ready = server_envelope("server.session.ready", payload={})
+    ready["turn_id"] = None
+    ready["payload"]["turn_id"] = None
     tts = server_envelope(
         "server.tts.audio",
         payload={
@@ -227,6 +229,8 @@ async def test_run_local_demo_streams_audio_and_writes_summary(
         "read_pcm16_from_wav",
         lambda _: b"\x01\x02" * 320,
     )
+    ids = iter([SESSION_ID, TURN_ID])
+    monkeypatch.setattr(local_demo_client, "uuid4", lambda: next(ids))
     monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
     monkeypatch.setitem(
         sys.modules,
@@ -263,6 +267,8 @@ async def test_run_local_demo_sends_turn_cancel_after_delay(
     server_envelope,
 ) -> None:
     ready = server_envelope("server.session.ready", payload={})
+    ready["turn_id"] = None
+    ready["payload"]["turn_id"] = None
     cancelled = server_envelope("server.turn.cancelled", payload={}, generation_epoch=1)
     websocket = FakeWebSocket([json.dumps(ready), json.dumps(cancelled)])
 
@@ -271,6 +277,8 @@ async def test_run_local_demo_sends_turn_cancel_after_delay(
         "read_pcm16_from_wav",
         lambda _: b"\x01\x02" * 320,
     )
+    ids = iter([SESSION_ID, TURN_ID])
+    monkeypatch.setattr(local_demo_client, "uuid4", lambda: next(ids))
     monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
     monkeypatch.setitem(
         sys.modules,
@@ -313,6 +321,8 @@ async def test_run_local_demo_rejects_non_ready_first_event_without_streaming_au
         "read_pcm16_from_wav",
         lambda _: b"\x01\x02" * 320,
     )
+    ids = iter([SESSION_ID, TURN_ID])
+    monkeypatch.setattr(local_demo_client, "uuid4", lambda: next(ids))
     monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
     monkeypatch.setitem(
         sys.modules,
@@ -344,6 +354,76 @@ def test_audio_engine_enqueues_wav_and_records_metrics(fake_clock: Callable[[], 
     assert sink.played_chunks == [b"RIFF....WAVE"]
     assert metrics.to_dict()["client_audio_enqueued_count"] == 1
     assert metrics.to_dict()["client_audio_play_start_ms"] == 0.0
+
+
+def test_audio_engine_serializes_reentrant_enqueue_without_overlap(
+    fake_clock: Callable[[], float],
+) -> None:
+    metrics = PlaybackMetrics(clock=fake_clock)
+
+    class ReentrantSink:
+        def __init__(self) -> None:
+            self.audio: AudioPlaybackEngine | None = None
+            self.played_chunks: list[bytes] = []
+            self.max_concurrent_play_calls = 0
+            self._play_depth = 0
+            self._enqueued_follow_up = False
+
+        def play(self, wav_bytes: bytes) -> None:
+            self._play_depth += 1
+            self.max_concurrent_play_calls = max(self.max_concurrent_play_calls, self._play_depth)
+            self.played_chunks.append(wav_bytes)
+            if not self._enqueued_follow_up:
+                self._enqueued_follow_up = True
+                assert self.audio is not None
+                self.audio.enqueue_wav("chunk-2", b"chunk-2", generation_epoch=0)
+            self._play_depth -= 1
+
+        def stop(self) -> None:
+            return None
+
+    sink = ReentrantSink()
+    audio = AudioPlaybackEngine(metrics, sink=sink)
+    sink.audio = audio
+
+    audio.enqueue_wav("chunk-1", b"chunk-1", generation_epoch=0)
+
+    assert sink.played_chunks == [b"chunk-1", b"chunk-2"]
+    assert sink.max_concurrent_play_calls == 1
+
+
+def test_audio_engine_stop_clears_pending_queue_before_old_chunk_plays(
+    fake_clock: Callable[[], float],
+) -> None:
+    metrics = PlaybackMetrics(clock=fake_clock)
+
+    class StopDuringFirstPlaySink:
+        def __init__(self) -> None:
+            self.audio: AudioPlaybackEngine | None = None
+            self.played_chunks: list[bytes] = []
+            self.stopped_count = 0
+            self._stopped_during_first_play = False
+
+        def play(self, wav_bytes: bytes) -> None:
+            self.played_chunks.append(wav_bytes)
+            if not self._stopped_during_first_play:
+                self._stopped_during_first_play = True
+                assert self.audio is not None
+                self.audio.enqueue_wav("chunk-2", b"chunk-2", generation_epoch=0)
+                self.audio.stop()
+
+        def stop(self) -> None:
+            self.stopped_count += 1
+
+    sink = StopDuringFirstPlaySink()
+    audio = AudioPlaybackEngine(metrics, sink=sink)
+    sink.audio = audio
+
+    audio.enqueue_wav("chunk-1", b"chunk-1", generation_epoch=0)
+
+    assert sink.played_chunks == [b"chunk-1"]
+    assert sink.stopped_count == 1
+    assert audio.queued_count == 0
 
 
 def test_stop_clears_audio_and_face_buffers(fake_clock: Callable[[], float]) -> None:
@@ -525,6 +605,40 @@ def test_receiver_drops_stale_generation_audio_and_face(tmp_path, server_envelop
     assert receiver.summary["old_turn_face_leak_count"] == 1
 
 
+def test_receiver_consumes_stale_tts_binary_without_saving_or_playing(
+    tmp_path,
+    server_envelope,
+) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    sink = MemoryAudioSink()
+    audio = AudioPlaybackEngine(metrics, sink=sink)
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=2))
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "stale-audio",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+            },
+            generation_epoch=1,
+        )
+    )
+
+    receiver.accept_binary(b"RIFF....WAVE")
+
+    assert receiver.pending_tts is None
+    assert sink.played_chunks == []
+    assert audio.queued_count == 0
+    assert not (tmp_path / "tts" / "stale-audio.wav").exists()
+    assert receiver.summary["stale_drop_count"] == 1
+    assert metrics.to_dict()["client_stale_audio_drop_count"] == 1
+
+
 def test_receiver_validates_ue5_frame_sequence(tmp_path, server_envelope) -> None:
     metrics = PlaybackMetrics(clock=lambda: 0.0)
     audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
@@ -647,3 +761,117 @@ def test_receiver_finish_writes_summary_and_terminal_event(tmp_path, server_enve
     assert summary["ue5_chunks"] == 1
     assert summary["terminal_event"] == "server.pipeline.done"
     assert summary["client_audio_enqueued_count"] == 1
+
+
+def test_receiver_finish_writes_metrics_contract_files(tmp_path, server_envelope) -> None:
+    fake_clock = FakeClock()
+    metrics = PlaybackMetrics(clock=fake_clock)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face, clock=fake_clock)
+
+    receiver.accept_json(server_envelope("server.session.ready", payload={}))
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+                "generation_epoch": 0,
+            },
+            generation_epoch=0,
+        )
+    )
+    receiver.accept_binary(b"RIFF....WAVE")
+    fake_clock.advance(0.010)
+    receiver.accept_json(
+        server_envelope(
+            "server.ue5.frames",
+            payload={
+                "chunk_id": "segment-1-0000",
+                "segment_id": "segment-1",
+                "start_frame_index": 0,
+                "frame_count": 1,
+                "frames": [{"frame_index": 0}],
+                "generation_epoch": 0,
+            },
+            generation_epoch=0,
+        )
+    )
+    fake_clock.advance(0.015)
+    receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=1))
+    receiver.finish()
+
+    expected_metric_keys = {
+        "client_tts_received_ms",
+        "client_audio_enqueued_count",
+        "client_audio_play_start_ms",
+        "client_audio_stopped_ms",
+        "client_ue5_first_frame_received_ms",
+        "client_face_buffered_chunk_count",
+        "client_face_first_frame_displayed_ms",
+        "client_audio_face_offset_ms",
+        "client_playback_stop_received_ms",
+        "client_interrupt_to_audio_stop_ms",
+        "client_face_buffer_cleared_ms",
+        "client_stale_audio_drop_count",
+        "client_stale_face_drop_count",
+    }
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    metrics_payload = json.loads(
+        (tmp_path / "client_playback_metrics.json").read_text(encoding="utf-8")
+    )
+
+    assert expected_metric_keys <= summary.keys()
+    assert expected_metric_keys <= metrics_payload.keys()
+    assert metrics_payload["client_tts_received_ms"] == 0.0
+    assert metrics_payload["client_audio_enqueued_count"] == 1
+    assert metrics_payload["client_audio_play_start_ms"] == 0.0
+    assert metrics_payload["client_ue5_first_frame_received_ms"] == 10.0
+    assert metrics_payload["client_face_buffered_chunk_count"] == 1
+    assert metrics_payload["client_face_first_frame_displayed_ms"] == 10.0
+    assert metrics_payload["client_audio_face_offset_ms"] == 10.0
+    assert metrics_payload["client_playback_stop_received_ms"] == 25.0
+    assert metrics_payload["client_audio_stopped_ms"] == 25.0
+    assert metrics_payload["client_interrupt_to_audio_stop_ms"] == 0.0
+    assert metrics_payload["client_face_buffer_cleared_ms"] == 25.0
+    assert metrics_payload["client_stale_audio_drop_count"] == 0
+    assert metrics_payload["client_stale_face_drop_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_local_demo_rejects_first_server_event_session_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server_envelope,
+) -> None:
+    ready = server_envelope("server.session.ready", payload={})
+    ready["turn_id"] = None
+    ready["payload"]["turn_id"] = None
+    ready["session_id"] = str(uuid4())
+    ready["payload"]["session_id"] = ready["session_id"]
+    websocket = FakeWebSocket([json.dumps(ready)])
+
+    monkeypatch.setattr(local_demo_client, "read_pcm16_from_wav", lambda _: b"\x01\x02" * 320)
+    ids = iter([SESSION_ID, TURN_ID])
+    monkeypatch.setattr(local_demo_client, "uuid4", lambda: next(ids))
+    monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        SimpleNamespace(connect=lambda url: FakeConnect(websocket)),
+    )
+
+    with pytest.raises(ProtocolError, match="server event session_id does not match"):
+        await run_local_demo(
+            "ws://127.0.0.1:8005/pipeline/stream",
+            tmp_path / "input.wav",
+            tmp_path / "out",
+            20,
+            play_audio=False,
+        )
+
+    sent_events = [json.loads(message) for message in websocket.sent if isinstance(message, str)]
+    assert [event["type"] for event in sent_events] == ["client.session.start"]
