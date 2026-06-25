@@ -469,6 +469,27 @@ def test_stop_clears_audio_and_face_buffers(fake_clock: Callable[[], float]) -> 
     assert summary["client_face_buffer_cleared_ms"] == 50.0
 
 
+def test_playback_metrics_record_interrupt_deltas(fake_clock: FakeClock) -> None:
+    metrics = PlaybackMetrics(clock=fake_clock)
+
+    fake_clock.advance(0.100)
+    metrics.mark_client_interrupt_sent()
+    fake_clock.advance(0.025)
+    metrics.mark_playback_stop_received()
+    fake_clock.advance(0.010)
+    metrics.mark_audio_stopped()
+    fake_clock.advance(0.005)
+    metrics.mark_face_buffer_cleared()
+
+    payload = metrics.to_dict()
+    assert payload["client_interrupt_sent_ms"] == 100.0
+    assert payload["server_playback_stop_received_ms"] == 125.0
+    assert payload["client_playback_stop_received_ms"] == 125.0
+    assert payload["client_interrupt_to_playback_stop_ms"] == 25.0
+    assert payload["client_interrupt_to_audio_stop_ms"] == 35.0
+    assert payload["client_interrupt_to_face_clear_ms"] == 40.0
+
+
 def test_receiver_accepts_tts_metadata_then_binary(tmp_path, server_envelope) -> None:
     metrics = PlaybackMetrics(clock=lambda: 0.0)
     audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
@@ -823,6 +844,8 @@ def test_receiver_finish_writes_metrics_contract_files(tmp_path, server_envelope
         )
     )
     fake_clock.advance(0.015)
+    metrics.mark_client_interrupt_sent()
+    fake_clock.advance(0.015)
     receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=1))
     receiver.finish()
 
@@ -835,8 +858,12 @@ def test_receiver_finish_writes_metrics_contract_files(tmp_path, server_envelope
         "client_face_buffered_chunk_count",
         "client_face_first_frame_displayed_ms",
         "client_audio_face_offset_ms",
+        "client_interrupt_sent_ms",
+        "server_playback_stop_received_ms",
         "client_playback_stop_received_ms",
+        "client_interrupt_to_playback_stop_ms",
         "client_interrupt_to_audio_stop_ms",
+        "client_interrupt_to_face_clear_ms",
         "client_face_buffer_cleared_ms",
         "client_stale_audio_drop_count",
         "client_stale_face_drop_count",
@@ -855,10 +882,14 @@ def test_receiver_finish_writes_metrics_contract_files(tmp_path, server_envelope
     assert metrics_payload["client_face_buffered_chunk_count"] == 1
     assert metrics_payload["client_face_first_frame_displayed_ms"] == 10.0
     assert metrics_payload["client_audio_face_offset_ms"] == 10.0
-    assert metrics_payload["client_playback_stop_received_ms"] == 25.0
-    assert metrics_payload["client_audio_stopped_ms"] == 25.0
-    assert metrics_payload["client_interrupt_to_audio_stop_ms"] == 0.0
-    assert metrics_payload["client_face_buffer_cleared_ms"] == 25.0
+    assert metrics_payload["client_interrupt_sent_ms"] == 25.0
+    assert metrics_payload["server_playback_stop_received_ms"] == 40.0
+    assert metrics_payload["client_playback_stop_received_ms"] == 40.0
+    assert metrics_payload["client_audio_stopped_ms"] == 40.0
+    assert metrics_payload["client_interrupt_to_playback_stop_ms"] == 15.0
+    assert metrics_payload["client_interrupt_to_audio_stop_ms"] == 15.0
+    assert metrics_payload["client_interrupt_to_face_clear_ms"] == 15.0
+    assert metrics_payload["client_face_buffer_cleared_ms"] == 40.0
     assert metrics_payload["client_stale_audio_drop_count"] == 0
     assert metrics_payload["client_stale_face_drop_count"] == 0
 

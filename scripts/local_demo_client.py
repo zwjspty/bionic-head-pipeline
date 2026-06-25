@@ -55,7 +55,11 @@ class PlaybackMetrics:
         self.client_audio_face_offset_ms: float | None = None
         self.client_face_buffer_cleared_ms: float | None = None
         self.client_playback_stop_received_ms: float | None = None
+        self.server_playback_stop_received_ms: float | None = None
+        self.client_interrupt_sent_ms: float | None = None
+        self.client_interrupt_to_playback_stop_ms: float | None = None
         self.client_interrupt_to_audio_stop_ms: float | None = None
+        self.client_interrupt_to_face_clear_ms: float | None = None
         self.client_stale_audio_drop_count = 0
         self.client_stale_face_drop_count = 0
 
@@ -76,9 +80,19 @@ class PlaybackMetrics:
             self.client_audio_stopped_ms = self._elapsed_ms()
             self._update_interrupt_to_audio_stop()
 
+    def mark_client_interrupt_sent(self) -> None:
+        if self.client_interrupt_sent_ms is None:
+            self.client_interrupt_sent_ms = self._elapsed_ms()
+            self._update_interrupt_to_playback_stop()
+            self._update_interrupt_to_audio_stop()
+            self._update_interrupt_to_face_clear()
+
     def mark_playback_stop_received(self) -> None:
         if self.client_playback_stop_received_ms is None:
-            self.client_playback_stop_received_ms = self._elapsed_ms()
+            stopped_at = self._elapsed_ms()
+            self.client_playback_stop_received_ms = stopped_at
+            self.server_playback_stop_received_ms = stopped_at
+            self._update_interrupt_to_playback_stop()
             self._update_interrupt_to_audio_stop()
 
     def mark_ue5_frame_buffered(self) -> None:
@@ -93,6 +107,7 @@ class PlaybackMetrics:
     def mark_face_buffer_cleared(self) -> None:
         if self.client_face_buffer_cleared_ms is None:
             self.client_face_buffer_cleared_ms = self._elapsed_ms()
+            self._update_interrupt_to_face_clear()
 
     def mark_stale_audio_dropped(self) -> None:
         self.client_stale_audio_drop_count += 1
@@ -110,8 +125,12 @@ class PlaybackMetrics:
             "client_face_buffered_chunk_count": self.client_face_buffered_chunk_count,
             "client_face_first_frame_displayed_ms": self.client_face_first_frame_displayed_ms,
             "client_audio_face_offset_ms": self.client_audio_face_offset_ms,
+            "client_interrupt_sent_ms": self.client_interrupt_sent_ms,
+            "server_playback_stop_received_ms": self.server_playback_stop_received_ms,
             "client_playback_stop_received_ms": self.client_playback_stop_received_ms,
+            "client_interrupt_to_playback_stop_ms": self.client_interrupt_to_playback_stop_ms,
             "client_interrupt_to_audio_stop_ms": self.client_interrupt_to_audio_stop_ms,
+            "client_interrupt_to_face_clear_ms": self.client_interrupt_to_face_clear_ms,
             "client_face_buffer_cleared_ms": self.client_face_buffer_cleared_ms,
             "client_stale_audio_drop_count": self.client_stale_audio_drop_count,
             "client_stale_face_drop_count": self.client_stale_face_drop_count,
@@ -131,14 +150,36 @@ class PlaybackMetrics:
                 3,
             )
 
+    def _update_interrupt_to_playback_stop(self) -> None:
+        if (
+            self.client_interrupt_to_playback_stop_ms is None
+            and self.client_interrupt_sent_ms is not None
+            and self.client_playback_stop_received_ms is not None
+        ):
+            self.client_interrupt_to_playback_stop_ms = round(
+                self.client_playback_stop_received_ms - self.client_interrupt_sent_ms,
+                3,
+            )
+
     def _update_interrupt_to_audio_stop(self) -> None:
         if (
             self.client_interrupt_to_audio_stop_ms is None
-            and self.client_playback_stop_received_ms is not None
+            and self.client_interrupt_sent_ms is not None
             and self.client_audio_stopped_ms is not None
         ):
             self.client_interrupt_to_audio_stop_ms = round(
-                self.client_audio_stopped_ms - self.client_playback_stop_received_ms,
+                self.client_audio_stopped_ms - self.client_interrupt_sent_ms,
+                3,
+            )
+
+    def _update_interrupt_to_face_clear(self) -> None:
+        if (
+            self.client_interrupt_to_face_clear_ms is None
+            and self.client_interrupt_sent_ms is not None
+            and self.client_face_buffer_cleared_ms is not None
+        ):
+            self.client_interrupt_to_face_clear_ms = round(
+                self.client_face_buffer_cleared_ms - self.client_interrupt_sent_ms,
                 3,
             )
 
