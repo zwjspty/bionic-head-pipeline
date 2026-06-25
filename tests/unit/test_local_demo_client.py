@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+import scripts.local_demo_client as local_demo_client
 from scripts.local_demo_client import (
     AudioPlaybackEngine,
     FacePlaybackEngine,
@@ -222,10 +223,11 @@ async def test_run_local_demo_streams_audio_and_writes_summary(
     )
 
     monkeypatch.setattr(
-        "scripts.local_demo_client.read_pcm16_from_wav",
+        local_demo_client,
+        "read_pcm16_from_wav",
         lambda _: b"\x01\x02" * 320,
     )
-    monkeypatch.setattr("scripts.local_demo_client.pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
     monkeypatch.setitem(
         sys.modules,
         "websockets",
@@ -265,10 +267,11 @@ async def test_run_local_demo_sends_turn_cancel_after_delay(
     websocket = FakeWebSocket([json.dumps(ready), json.dumps(cancelled)])
 
     monkeypatch.setattr(
-        "scripts.local_demo_client.read_pcm16_from_wav",
+        local_demo_client,
+        "read_pcm16_from_wav",
         lambda _: b"\x01\x02" * 320,
     )
-    monkeypatch.setattr("scripts.local_demo_client.pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
     monkeypatch.setitem(
         sys.modules,
         "websockets",
@@ -306,10 +309,11 @@ async def test_run_local_demo_rejects_non_ready_first_event_without_streaming_au
     websocket = FakeWebSocket([json.dumps(first_error)])
 
     monkeypatch.setattr(
-        "scripts.local_demo_client.read_pcm16_from_wav",
+        local_demo_client,
+        "read_pcm16_from_wav",
         lambda _: b"\x01\x02" * 320,
     )
-    monkeypatch.setattr("scripts.local_demo_client.pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
     monkeypatch.setitem(
         sys.modules,
         "websockets",
