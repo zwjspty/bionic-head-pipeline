@@ -1,7 +1,9 @@
 import json
 import sys
+import wave
 from collections.abc import Callable
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -15,6 +17,7 @@ from scripts.local_demo_client import (
     MemoryAudioSink,
     PlaybackMetrics,
     ProtocolError,
+    SoundDeviceAudioSink,
     build_parser,
     run_local_demo,
 )
@@ -135,6 +138,67 @@ def test_build_parser_accepts_cancel_after_ms() -> None:
     assert args.cancel_after_ms == 500
 
 
+def test_build_parser_defaults_to_audio_playback() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--wav",
+            "/tmp/input.wav",
+            "--output-dir",
+            "/tmp/out",
+        ]
+    )
+
+    assert args.play_audio is True
+
+
+def _wav_bytes_from_int16_samples(samples: list[int], sample_rate: int = 16000) -> bytes:
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples))
+    return buffer.getvalue()
+
+
+def test_sounddevice_audio_sink_decodes_wav_and_plays(monkeypatch: pytest.MonkeyPatch) -> None:
+    played: list[tuple[object, int]] = []
+    fake_sounddevice = SimpleNamespace(
+        play=lambda samples, samplerate: played.append((samples, samplerate)),
+        stop=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sounddevice)
+
+    sink = SoundDeviceAudioSink()
+    sink.play(_wav_bytes_from_int16_samples([0, 1000, -1000]))
+
+    assert len(played) == 1
+    samples, samplerate = played[0]
+    assert samplerate == 16000
+    assert samples.tolist() == [0, 1000, -1000]
+
+
+def test_sounddevice_audio_sink_requires_optional_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "sounddevice", raising=False)
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sounddevice":
+            raise ImportError("missing sounddevice")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    with pytest.raises(SystemExit, match="sounddevice is required for audio playback"):
+        SoundDeviceAudioSink()
+
+
 @pytest.mark.asyncio
 async def test_run_local_demo_streams_audio_and_writes_summary(
     monkeypatch: pytest.MonkeyPatch,
@@ -230,6 +294,39 @@ async def test_run_local_demo_sends_turn_cancel_after_delay(
         "client.turn.cancel",
     ]
     assert sent_events[-1]["sequence"] == 5
+
+
+@pytest.mark.asyncio
+async def test_run_local_demo_rejects_non_ready_first_event_without_streaming_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server_envelope,
+) -> None:
+    first_error = server_envelope("server.pipeline.error", payload={"message": "boom"})
+    websocket = FakeWebSocket([json.dumps(first_error)])
+
+    monkeypatch.setattr(
+        "scripts.local_demo_client.read_pcm16_from_wav",
+        lambda _: b"\x01\x02" * 320,
+    )
+    monkeypatch.setattr("scripts.local_demo_client.pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        SimpleNamespace(connect=lambda url: FakeConnect(websocket)),
+    )
+
+    with pytest.raises(ProtocolError, match="expected first server event to be server.session.ready"):
+        await run_local_demo(
+            "ws://127.0.0.1:8005/pipeline/stream",
+            tmp_path / "input.wav",
+            tmp_path / "out",
+            20,
+            play_audio=False,
+        )
+
+    sent_events = [json.loads(message) for message in websocket.sent if isinstance(message, str)]
+    assert [event["type"] for event in sent_events] == ["client.session.start"]
 
 
 def test_audio_engine_enqueues_wav_and_records_metrics(fake_clock: Callable[[], float]) -> None:

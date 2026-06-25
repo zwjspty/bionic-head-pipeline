@@ -4,14 +4,18 @@ import argparse
 import asyncio
 import contextlib
 import json
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from time import perf_counter
 from uuid import UUID
 from typing import Protocol
 from uuid import uuid4
+
+import numpy as np
 
 from scripts.stream_client import client_event, pcm_chunks, read_pcm16_from_wav
 
@@ -93,7 +97,25 @@ class SoundDeviceAudioSink:
         self._sounddevice = sounddevice
 
     def play(self, wav_bytes: bytes) -> None:
-        del wav_bytes
+        with wave.open(BytesIO(wav_bytes), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            samplerate = wav_file.getframerate()
+            frames = wav_file.readframes(wav_file.getnframes())
+
+        dtype_by_width = {
+            1: np.uint8,
+            2: np.int16,
+            4: np.int32,
+        }
+        dtype = dtype_by_width.get(sample_width)
+        if dtype is None:
+            raise RuntimeError(f"unsupported WAV sample width: {sample_width}")
+
+        samples = np.frombuffer(frames, dtype=dtype)
+        if channels > 1:
+            samples = samples.reshape(-1, channels)
+        self._sounddevice.play(samples, samplerate)
 
     def stop(self) -> None:
         self._sounddevice.stop()
@@ -432,7 +454,10 @@ async def run_local_demo(
         first = await websocket.recv()
         if isinstance(first, bytes):
             raise ProtocolError("expected server.session.ready JSON")
-        receiver.accept_json(json.loads(first))
+        first_event = json.loads(first)
+        if first_event.get("type") != "server.session.ready":
+            raise ProtocolError("expected first server event to be server.session.ready")
+        receiver.accept_json(first_event)
         session_id = receiver.session_id or session_id
         turn_id = receiver.turn_id or turn_id
 
