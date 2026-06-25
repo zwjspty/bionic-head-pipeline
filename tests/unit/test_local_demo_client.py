@@ -283,7 +283,7 @@ async def test_run_local_demo_streams_audio_and_writes_summary(
 
 
 @pytest.mark.asyncio
-async def test_run_local_demo_sends_turn_cancel_after_delay(
+async def test_run_local_demo_does_not_send_cancel_before_audio_playback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     server_envelope,
@@ -324,9 +324,86 @@ async def test_run_local_demo_sends_turn_cancel_after_delay(
         "client.audio.start",
         "client.audio.chunk",
         "client.audio.end",
+    ]
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["client_interrupt_sent_ms"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_local_demo_sends_cancel_after_first_audio_play(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server_envelope,
+) -> None:
+    ready = server_envelope("server.session.ready", payload={})
+    ready["turn_id"] = None
+    ready["payload"]["turn_id"] = None
+    wav_payload = b"RIFF----WAVE"
+    tts = server_envelope(
+        "server.tts.audio",
+        payload={
+            "chunk_id": "chunk-1",
+            "segment_id": "segment-1",
+            "format": "wav",
+            "byte_length": len(wav_payload),
+            "generation_epoch": 0,
+        },
+        generation_epoch=0,
+    )
+    stop = server_envelope("server.playback.stop", payload={}, generation_epoch=1)
+    cancelled = server_envelope("server.turn.cancelled", payload={}, generation_epoch=1)
+
+    class PlaybackAnchoredFakeWebSocket(FakeWebSocket):
+        def __init__(self) -> None:
+            super().__init__(
+                [json.dumps(ready), json.dumps(tts), wav_payload, json.dumps(stop), json.dumps(cancelled)]
+            )
+            self.cancel_sent_before_tts_binary_received = False
+
+        async def recv(self) -> str | bytes:
+            message = await super().recv()
+            if message == wav_payload:
+                sent_events = [json.loads(sent) for sent in self.sent if isinstance(sent, str)]
+                self.cancel_sent_before_tts_binary_received = any(
+                    event["type"] == "client.turn.cancel" for event in sent_events
+                )
+            return message
+
+    websocket = PlaybackAnchoredFakeWebSocket()
+
+    monkeypatch.setattr(local_demo_client, "read_pcm16_from_wav", lambda _: b"\x01\x02" * 320)
+    ids = iter([SESSION_ID, TURN_ID])
+    monkeypatch.setattr(local_demo_client, "uuid4", lambda: next(ids))
+    monkeypatch.setattr(local_demo_client, "pcm_chunks", lambda pcm, *, chunk_ms: [pcm])
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        SimpleNamespace(connect=lambda url: FakeConnect(websocket)),
+    )
+
+    terminal = await run_local_demo(
+        "ws://127.0.0.1:8005/pipeline/stream",
+        tmp_path / "input.wav",
+        tmp_path / "out",
+        20,
+        play_audio=False,
+        cancel_after_ms=0,
+    )
+
+    assert terminal == "server.turn.cancelled"
+    sent_events = [json.loads(message) for message in websocket.sent if isinstance(message, str)]
+    assert [event["type"] for event in sent_events] == [
+        "client.session.start",
+        "client.audio.start",
+        "client.audio.chunk",
+        "client.audio.end",
         "client.turn.cancel",
     ]
-    assert sent_events[-1]["sequence"] == 5
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["tts_chunks"] == 1
+    assert websocket.cancel_sent_before_tts_binary_received is False
+    assert summary["client_interrupt_sent_ms"] is not None
+    assert summary["playback_stop_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -467,6 +544,27 @@ def test_stop_clears_audio_and_face_buffers(fake_clock: Callable[[], float]) -> 
     assert face.buffered_chunk_count == 0
     assert summary["client_audio_stopped_ms"] == 50.0
     assert summary["client_face_buffer_cleared_ms"] == 50.0
+
+
+def test_playback_metrics_record_interrupt_deltas(fake_clock: FakeClock) -> None:
+    metrics = PlaybackMetrics(clock=fake_clock)
+
+    fake_clock.advance(0.100)
+    metrics.mark_client_interrupt_sent()
+    fake_clock.advance(0.025)
+    metrics.mark_playback_stop_received()
+    fake_clock.advance(0.010)
+    metrics.mark_audio_stopped()
+    fake_clock.advance(0.005)
+    metrics.mark_face_buffer_cleared()
+
+    payload = metrics.to_dict()
+    assert payload["client_interrupt_sent_ms"] == 100.0
+    assert payload["server_playback_stop_received_ms"] == 125.0
+    assert payload["client_playback_stop_received_ms"] == 125.0
+    assert payload["client_interrupt_to_playback_stop_ms"] == 25.0
+    assert payload["client_interrupt_to_audio_stop_ms"] == 35.0
+    assert payload["client_interrupt_to_face_clear_ms"] == 40.0
 
 
 def test_receiver_accepts_tts_metadata_then_binary(tmp_path, server_envelope) -> None:
@@ -823,6 +921,8 @@ def test_receiver_finish_writes_metrics_contract_files(tmp_path, server_envelope
         )
     )
     fake_clock.advance(0.015)
+    metrics.mark_client_interrupt_sent()
+    fake_clock.advance(0.015)
     receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=1))
     receiver.finish()
 
@@ -835,8 +935,12 @@ def test_receiver_finish_writes_metrics_contract_files(tmp_path, server_envelope
         "client_face_buffered_chunk_count",
         "client_face_first_frame_displayed_ms",
         "client_audio_face_offset_ms",
+        "client_interrupt_sent_ms",
+        "server_playback_stop_received_ms",
         "client_playback_stop_received_ms",
+        "client_interrupt_to_playback_stop_ms",
         "client_interrupt_to_audio_stop_ms",
+        "client_interrupt_to_face_clear_ms",
         "client_face_buffer_cleared_ms",
         "client_stale_audio_drop_count",
         "client_stale_face_drop_count",
@@ -855,10 +959,14 @@ def test_receiver_finish_writes_metrics_contract_files(tmp_path, server_envelope
     assert metrics_payload["client_face_buffered_chunk_count"] == 1
     assert metrics_payload["client_face_first_frame_displayed_ms"] == 10.0
     assert metrics_payload["client_audio_face_offset_ms"] == 10.0
-    assert metrics_payload["client_playback_stop_received_ms"] == 25.0
-    assert metrics_payload["client_audio_stopped_ms"] == 25.0
-    assert metrics_payload["client_interrupt_to_audio_stop_ms"] == 0.0
-    assert metrics_payload["client_face_buffer_cleared_ms"] == 25.0
+    assert metrics_payload["client_interrupt_sent_ms"] == 25.0
+    assert metrics_payload["server_playback_stop_received_ms"] == 40.0
+    assert metrics_payload["client_playback_stop_received_ms"] == 40.0
+    assert metrics_payload["client_audio_stopped_ms"] == 40.0
+    assert metrics_payload["client_interrupt_to_playback_stop_ms"] == 15.0
+    assert metrics_payload["client_interrupt_to_audio_stop_ms"] == 15.0
+    assert metrics_payload["client_interrupt_to_face_clear_ms"] == 15.0
+    assert metrics_payload["client_face_buffer_cleared_ms"] == 40.0
     assert metrics_payload["client_stale_audio_drop_count"] == 0
     assert metrics_payload["client_stale_face_drop_count"] == 0
 

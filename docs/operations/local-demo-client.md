@@ -52,4 +52,29 @@ For no-audio verification, expect:
 - `ue5/*.json` exists
 - `terminal_event` is `server.pipeline.done`
 
+## Playback interrupt smoke
+
+Use this to validate playback-side cancel behavior without a microphone:
+
+```bash
+.venv/bin/python scripts/local_demo_client.py \
+  --url ws://127.0.0.1:8005/pipeline/stream \
+  --wav /tmp/bionic-demo-input.wav \
+  --output-dir /tmp/bionic-local-demo-cancel \
+  --chunk-ms 40 \
+  --no-play-audio \
+  --cancel-after-ms 300
+```
+
+`--cancel-after-ms` starts counting when the first local TTS chunk enters playback. For `--cancel-after-ms 0`, the client sends `client.turn.cancel` immediately after first local playback starts.
+
+Expected summary fields:
+
+- `terminal_event` is usually `server.turn.cancelled` for a successful interrupt smoke.
+- `client_interrupt_sent_ms` is not null.
+- `server_playback_stop_received_ms` is not null if the server emitted `server.playback.stop`.
+- `client_interrupt_to_audio_stop_ms` is non-negative when local audio was stopped after the interrupt.
+- `client_interrupt_to_face_clear_ms` is non-negative when local face buffers were cleared after the interrupt.
+- `client_stale_audio_drop_count` and `client_stale_face_drop_count` record stale old-generation drops.
+
 Note: `--play-audio` remains the default, but `--no-play-audio` is the preferred flag for headless smoke runs. If playback is enabled, `sounddevice` is optional at runtime and used only when `--play-audio` is set.

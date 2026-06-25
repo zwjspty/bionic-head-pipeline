@@ -55,7 +55,11 @@ class PlaybackMetrics:
         self.client_audio_face_offset_ms: float | None = None
         self.client_face_buffer_cleared_ms: float | None = None
         self.client_playback_stop_received_ms: float | None = None
+        self.server_playback_stop_received_ms: float | None = None
+        self.client_interrupt_sent_ms: float | None = None
+        self.client_interrupt_to_playback_stop_ms: float | None = None
         self.client_interrupt_to_audio_stop_ms: float | None = None
+        self.client_interrupt_to_face_clear_ms: float | None = None
         self.client_stale_audio_drop_count = 0
         self.client_stale_face_drop_count = 0
 
@@ -76,9 +80,19 @@ class PlaybackMetrics:
             self.client_audio_stopped_ms = self._elapsed_ms()
             self._update_interrupt_to_audio_stop()
 
+    def mark_client_interrupt_sent(self) -> None:
+        if self.client_interrupt_sent_ms is None:
+            self.client_interrupt_sent_ms = self._elapsed_ms()
+            self._update_interrupt_to_playback_stop()
+            self._update_interrupt_to_audio_stop()
+            self._update_interrupt_to_face_clear()
+
     def mark_playback_stop_received(self) -> None:
         if self.client_playback_stop_received_ms is None:
-            self.client_playback_stop_received_ms = self._elapsed_ms()
+            stopped_at = self._elapsed_ms()
+            self.client_playback_stop_received_ms = stopped_at
+            self.server_playback_stop_received_ms = stopped_at
+            self._update_interrupt_to_playback_stop()
             self._update_interrupt_to_audio_stop()
 
     def mark_ue5_frame_buffered(self) -> None:
@@ -93,6 +107,7 @@ class PlaybackMetrics:
     def mark_face_buffer_cleared(self) -> None:
         if self.client_face_buffer_cleared_ms is None:
             self.client_face_buffer_cleared_ms = self._elapsed_ms()
+            self._update_interrupt_to_face_clear()
 
     def mark_stale_audio_dropped(self) -> None:
         self.client_stale_audio_drop_count += 1
@@ -110,8 +125,12 @@ class PlaybackMetrics:
             "client_face_buffered_chunk_count": self.client_face_buffered_chunk_count,
             "client_face_first_frame_displayed_ms": self.client_face_first_frame_displayed_ms,
             "client_audio_face_offset_ms": self.client_audio_face_offset_ms,
+            "client_interrupt_sent_ms": self.client_interrupt_sent_ms,
+            "server_playback_stop_received_ms": self.server_playback_stop_received_ms,
             "client_playback_stop_received_ms": self.client_playback_stop_received_ms,
+            "client_interrupt_to_playback_stop_ms": self.client_interrupt_to_playback_stop_ms,
             "client_interrupt_to_audio_stop_ms": self.client_interrupt_to_audio_stop_ms,
+            "client_interrupt_to_face_clear_ms": self.client_interrupt_to_face_clear_ms,
             "client_face_buffer_cleared_ms": self.client_face_buffer_cleared_ms,
             "client_stale_audio_drop_count": self.client_stale_audio_drop_count,
             "client_stale_face_drop_count": self.client_stale_face_drop_count,
@@ -131,14 +150,36 @@ class PlaybackMetrics:
                 3,
             )
 
+    def _update_interrupt_to_playback_stop(self) -> None:
+        if (
+            self.client_interrupt_to_playback_stop_ms is None
+            and self.client_interrupt_sent_ms is not None
+            and self.client_playback_stop_received_ms is not None
+        ):
+            self.client_interrupt_to_playback_stop_ms = round(
+                self.client_playback_stop_received_ms - self.client_interrupt_sent_ms,
+                3,
+            )
+
     def _update_interrupt_to_audio_stop(self) -> None:
         if (
             self.client_interrupt_to_audio_stop_ms is None
-            and self.client_playback_stop_received_ms is not None
+            and self.client_interrupt_sent_ms is not None
             and self.client_audio_stopped_ms is not None
         ):
             self.client_interrupt_to_audio_stop_ms = round(
-                self.client_audio_stopped_ms - self.client_playback_stop_received_ms,
+                self.client_audio_stopped_ms - self.client_interrupt_sent_ms,
+                3,
+            )
+
+    def _update_interrupt_to_face_clear(self) -> None:
+        if (
+            self.client_interrupt_to_face_clear_ms is None
+            and self.client_interrupt_sent_ms is not None
+            and self.client_face_buffer_cleared_ms is not None
+        ):
+            self.client_interrupt_to_face_clear_ms = round(
+                self.client_face_buffer_cleared_ms - self.client_interrupt_sent_ms,
                 3,
             )
 
@@ -190,9 +231,17 @@ class SoundDeviceAudioSink:
 
 
 class AudioPlaybackEngine:
-    def __init__(self, metrics: PlaybackMetrics, sink: AudioSink | None = None) -> None:
+    def __init__(
+        self,
+        metrics: PlaybackMetrics,
+        sink: AudioSink | None = None,
+        *,
+        on_first_play: Callable[[], None] | None = None,
+    ) -> None:
         self._metrics = metrics
         self._sink = sink or MemoryAudioSink()
+        self._on_first_play = on_first_play
+        self._first_play_callback_fired = False
         self._queued_chunks: dict[str, bytes] = {}
         self._pending_playback: deque[tuple[str, bytes, int | None]] = deque()
         self._draining = False
@@ -229,6 +278,9 @@ class AudioPlaybackEngine:
             while self._pending_playback:
                 _, wav_bytes, _ = self._pending_playback.popleft()
                 self._metrics.mark_audio_play_started()
+                if not self._first_play_callback_fired and self._on_first_play is not None:
+                    self._first_play_callback_fired = True
+                    self._on_first_play()
                 self._sink.play(wav_bytes)
         finally:
             self._draining = False
@@ -554,17 +606,49 @@ async def run_local_demo(
     turn_id = uuid4()
     audio_sink: AudioSink = SoundDeviceAudioSink() if play_audio else MemoryAudioSink()
     metrics = PlaybackMetrics(clock=perf_counter)
+    sequence = 1
+    cancel_task: asyncio.Task[None] | None = None
+    cancel_sent = False
+    cancel_websocket = None
+
+    async def send_cancel_after_playback_delay() -> None:
+        nonlocal sequence, cancel_sent
+        if cancel_after_ms is not None and cancel_after_ms > 0:
+            await asyncio.sleep(cancel_after_ms / 1000.0)
+        if cancel_sent or cancel_websocket is None:
+            return
+        cancel_sent = True
+        current_sequence = sequence
+        sequence += 1
+        metrics.mark_client_interrupt_sent()
+        await cancel_websocket.send(
+            json.dumps(
+                client_event(
+                    "client.turn.cancel",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    sequence=current_sequence,
+                    payload={"reason": "client_playback_interrupt"},
+                )
+            )
+        )
+
+    def schedule_cancel_on_first_play() -> None:
+        nonlocal cancel_task
+        if cancel_after_ms is None or cancel_task is not None:
+            return
+        cancel_task = asyncio.create_task(send_cancel_after_playback_delay())
+
     receiver = LocalDemoReceiver(
         output_dir,
-        AudioPlaybackEngine(metrics, sink=audio_sink),
+        AudioPlaybackEngine(metrics, sink=audio_sink, on_first_play=schedule_cancel_on_first_play),
         FacePlaybackEngine(metrics),
         session_id=session_id,
         turn_id=turn_id,
     )
-    sequence = 1
-    cancel_task: asyncio.Task[None] | None = None
 
     async with websockets.connect(url) as websocket:
+        cancel_websocket = websocket
         await websocket.send(
             json.dumps(
                 client_event(
@@ -631,37 +715,14 @@ async def run_local_demo(
         )
         sequence += 1
 
-        if cancel_after_ms is not None:
-            cancel_sequence = sequence
-
-            async def send_cancel() -> None:
-                await websocket.send(
-                    json.dumps(
-                        client_event(
-                            "client.turn.cancel",
-                            session_id=session_id,
-                            turn_id=turn_id,
-                            sequence=cancel_sequence,
-                            payload={"reason": "client_timeout"},
-                        )
-                    )
-                )
-
-            if cancel_after_ms <= 0:
-                await send_cancel()
-            else:
-                async def delayed_cancel() -> None:
-                    await asyncio.sleep(cancel_after_ms / 1000.0)
-                    await send_cancel()
-
-                cancel_task = asyncio.create_task(delayed_cancel())
-
         while receiver.terminal_event is None:
             message = await websocket.recv()
             if isinstance(message, bytes):
                 receiver.accept_binary(message)
             else:
                 receiver.accept_json(json.loads(message))
+            if cancel_task is not None and not cancel_task.done():
+                await asyncio.sleep(0)
 
     if cancel_task is not None and not cancel_task.done():
         cancel_task.cancel()
