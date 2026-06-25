@@ -16,7 +16,7 @@ PYTHONPATH=src BIONIC_CONFIG=/tmp/bionic-local-emotalk-gpu.json \
 Run no-audio local demo (recommended for headless smoke, CI-like, or other automation environments):
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/local_demo_client.py \
+.venv/bin/python scripts/local_demo_client.py \
   --url ws://127.0.0.1:8005/pipeline/stream \
   --wav /tmp/bionic-demo-input.wav \
   --output-dir /tmp/bionic-local-demo \
@@ -28,7 +28,7 @@ Run with optional local playback (fresh install needs both `client` and `client-
 
 ```bash
 .venv/bin/python -m pip install -e ".[client,client-audio]"
-PYTHONPATH=src .venv/bin/python scripts/local_demo_client.py \
+.venv/bin/python scripts/local_demo_client.py \
   --url ws://127.0.0.1:8005/pipeline/stream \
   --wav /tmp/bionic-demo-input.wav \
   --output-dir /tmp/bionic-local-demo-audio \

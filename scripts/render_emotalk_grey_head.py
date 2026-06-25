@@ -83,6 +83,7 @@ def build_ffmpeg_command(
     fps: int,
     resolution: str,
 ) -> list[str]:
+    normalized_resolution = normalize_resolution(resolution)
     return [
         "ffmpeg",
         "-v",
@@ -97,10 +98,17 @@ def build_ffmpeg_command(
         "-pix_fmt",
         "yuv420p",
         "-s",
-        resolution,
+        normalized_resolution,
         "-shortest",
         str(output_mp4),
     ]
+
+
+def normalize_resolution(resolution: str) -> str:
+    normalized = resolution.strip()
+    if normalized.isdigit():
+        return f"{normalized}x{normalized}"
+    return normalized
 
 
 def require_file(path: Path, label: str) -> None:
