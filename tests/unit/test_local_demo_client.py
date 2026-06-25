@@ -279,19 +279,49 @@ def test_receiver_validates_ue5_frame_sequence(tmp_path, server_envelope) -> Non
         )
     )
 
-    with pytest.raises(ProtocolError, match="server.ue5.frames has a gap or overlap"):
-        receiver.accept_json(
-            server_envelope(
-                "server.ue5.frames",
-                payload={
-                    "chunk_id": "segment-1-0001",
-                    "segment_id": "segment-1",
-                    "start_frame_index": 0,
-                    "frame_count": 1,
-                    "frames": [{"frame_index": 0}],
-                },
-            )
+
+@pytest.mark.parametrize(
+    "stop_event",
+    ["server.playback.stop", "server.turn.cancelled"],
+)
+def test_receiver_resets_ue5_frame_sequence_after_stop_or_cancel(
+    tmp_path, server_envelope, stop_event
+) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face)
+
+    receiver.accept_json(
+        server_envelope(
+            "server.ue5.frames",
+            payload={
+                "chunk_id": "segment-1-0000",
+                "segment_id": "segment-1",
+                "start_frame_index": 0,
+                "frame_count": 1,
+                "frames": [{"frame_index": 0}],
+            },
+            generation_epoch=0,
         )
+    )
+    receiver.accept_json(server_envelope(stop_event, payload={}, generation_epoch=1))
+
+    receiver.accept_json(
+        server_envelope(
+            "server.ue5.frames",
+            payload={
+                "chunk_id": "segment-1-0001",
+                "segment_id": "segment-1",
+                "start_frame_index": 0,
+                "frame_count": 1,
+                "frames": [{"frame_index": 0}],
+            },
+            generation_epoch=1,
+        )
+    )
+
+    assert receiver.summary["ue5_chunks"] == 2
 
 
 def test_receiver_requires_ue5_start_frame_index_and_frame_count(tmp_path, server_envelope) -> None:

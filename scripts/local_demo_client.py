@@ -298,6 +298,7 @@ class LocalDemoReceiver:
         self.audio.stop()
         self.audio.clear()
         self.face.clear()
+        self.next_ue5_frame_index_by_segment.clear()
 
     def _segment_id_for_ue5_chunk(self, chunk_id: str) -> str:
         prefix, separator, suffix = chunk_id.rpartition("-")
