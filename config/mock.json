@@ -38,6 +38,11 @@
     "seed": 42,
     "reset_blink_on_new_turn": false
   },
+  "history": {
+    "enabled": true,
+    "max_turn_pairs": 6,
+    "max_chars": 3000
+  },
   "adapters": {
     "asr": {"provider": "mock", "timeout_seconds": 5},
     "llm": {"provider": "mock", "timeout_seconds": 5},
