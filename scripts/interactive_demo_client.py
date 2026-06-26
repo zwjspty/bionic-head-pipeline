@@ -57,6 +57,41 @@ class StdinCommandSource:
         return await asyncio.to_thread(input, self._prompt)
 
 
+class FakeMicBackend:
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        chunk_ms: int,
+        chunks: list[bytes] | None = None,
+    ) -> None:
+        self.sample_rate = sample_rate
+        self.chunk_ms = chunk_ms
+        self._chunks = list(chunks) if chunks is not None else None
+        self._active = False
+
+    async def start(self) -> None:
+        self._active = True
+
+    async def read_chunk(self) -> bytes:
+        if not self._active:
+            return b""
+        if self._chunks is not None:
+            if not self._chunks:
+                return b""
+            return self._chunks.pop(0)
+        await asyncio.sleep(self.chunk_ms / 1000.0)
+        if not self._active:
+            return b""
+        return b"\x00\x00" * chunk_samples_for_ms(self.sample_rate, self.chunk_ms)
+
+    async def stop(self) -> None:
+        self._active = False
+
+    async def close(self) -> None:
+        await self.stop()
+
+
 class SoundDeviceMicrophoneInput:
     def __init__(self, *, sample_rate: int, chunk_ms: int, channels: int = 1) -> None:
         try:
@@ -134,12 +169,39 @@ def chunk_samples_for_ms(sample_rate: int, chunk_ms: int) -> int:
     return int(sample_rate * chunk_ms / 1000)
 
 
+def create_microphone_backend(backend: str, *, sample_rate: int, chunk_ms: int) -> MicrophoneInput:
+    if backend == "fake":
+        return FakeMicBackend(sample_rate=sample_rate, chunk_ms=chunk_ms)
+    if backend == "sounddevice":
+        return SoundDeviceMicrophoneInput(sample_rate=sample_rate, chunk_ms=chunk_ms)
+    raise SystemExit(f"unsupported microphone backend: {backend}")
+
+
+def create_audio_sink(backend: str) -> AudioSink:
+    if backend == "null":
+        return MemoryAudioSink()
+    if backend == "sounddevice":
+        return SoundDeviceAudioSink()
+    raise SystemExit(f"unsupported audio backend: {backend}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the interactive microphone demo client.")
     parser.add_argument("--url", required=True, help="WebSocket URL, e.g. ws://127.0.0.1:8005/pipeline/stream")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for received audio/frames/summary")
     parser.add_argument("--chunk-ms", type=int, default=40, help="Microphone PCM chunk duration in milliseconds")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Microphone sample rate; default is 16 kHz")
+    parser.add_argument(
+        "--mic-backend",
+        choices=["sounddevice", "fake"],
+        default="sounddevice",
+        help="Microphone backend. Use fake for protocol smoke tests without a real microphone.",
+    )
+    parser.add_argument(
+        "--audio-backend",
+        choices=["sounddevice", "null"],
+        help="Audio playback backend. Defaults to sounddevice unless --no-play-audio is used.",
+    )
     parser.add_argument(
         "--play-audio",
         action=argparse.BooleanOptionalAction,
@@ -318,7 +380,8 @@ async def run_interactive_demo(
     output_dir: Path,
     command_source: CommandSource,
     microphone: MicrophoneInput,
-    play_audio: bool,
+    play_audio: bool | None = None,
+    audio_backend: str | None = None,
     chunk_ms: int,
     sample_rate: int,
     clock: Callable[[], float] = perf_counter,
@@ -330,7 +393,8 @@ async def run_interactive_demo(
 
     session_id = uuid4()
     turn_id = uuid4()
-    audio_sink: AudioSink = SoundDeviceAudioSink() if play_audio else MemoryAudioSink()
+    resolved_audio_backend = audio_backend or ("sounddevice" if play_audio else "null")
+    audio_sink = create_audio_sink(resolved_audio_backend)
     metrics = PlaybackMetrics(clock=clock)
     receiver = LocalDemoReceiver(
         output_dir,
@@ -379,13 +443,18 @@ async def run_interactive_demo(
 
 def main() -> None:
     args = build_parser().parse_args()
+    audio_backend = args.audio_backend or ("sounddevice" if args.play_audio else "null")
     terminal_event = asyncio.run(
         run_interactive_demo(
             url=args.url,
             output_dir=args.output_dir,
             command_source=StdinCommandSource(),
-            microphone=SoundDeviceMicrophoneInput(sample_rate=args.sample_rate, chunk_ms=args.chunk_ms),
-            play_audio=args.play_audio,
+            microphone=create_microphone_backend(
+                args.mic_backend,
+                sample_rate=args.sample_rate,
+                chunk_ms=args.chunk_ms,
+            ),
+            audio_backend=audio_backend,
             chunk_ms=args.chunk_ms,
             sample_rate=args.sample_rate,
         )

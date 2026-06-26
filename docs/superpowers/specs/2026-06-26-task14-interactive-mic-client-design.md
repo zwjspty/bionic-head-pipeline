@@ -37,6 +37,8 @@ New CLI script that owns the interactive session. It should:
 - send `client.session.start`;
 - wait for `server.session.ready`;
 - use keyboard commands from stdin;
+- support `--mic-backend sounddevice|fake`;
+- support `--audio-backend sounddevice|null`;
 - capture microphone chunks while recording;
 - send `client.audio.start`, paired `client.audio.chunk` JSON and PCM binary frames, then `client.audio.end`;
 - reuse `LocalDemoReceiver`, `AudioPlaybackEngine`, `FacePlaybackEngine`, `PlaybackMetrics`, and audio playback sinks from `scripts/local_demo_client.py`;
@@ -57,6 +59,15 @@ class MicrophoneInput(Protocol):
 ```
 
 Default tests use a fake microphone. The real backend uses `sounddevice.InputStream`, converts captured samples to PCM signed 16-bit little-endian, mono, 16000 Hz, and yields chunks sized by `--chunk-ms`.
+
+The CLI exposes both:
+
+```text
+--mic-backend sounddevice
+--mic-backend fake
+```
+
+The fake backend is for no-hardware protocol smoke runs. It emits legal PCM16LE chunks and must not depend on a real sound device.
 
 ### Keyboard command source
 
@@ -108,6 +119,7 @@ Add minimal mic metrics to summary:
 - `q` while recording stops the microphone and sends `client.audio.end` if a turn has started.
 - Ctrl-C should attempt to stop microphone, stop local playback, finish summary, and exit.
 - If the server closes or emits terminal error/cancel/done, the client should finish the current turn summary without crashing.
+- Real speaker playback should be documented with a headphone warning because Task 14 does not include acoustic echo cancellation.
 
 ## Testing Strategy
 

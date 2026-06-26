@@ -138,17 +138,44 @@ def test_build_parser_accepts_required_interactive_args() -> None:
             "ws://127.0.0.1:8005/pipeline/stream",
             "--output-dir",
             "/tmp/interactive",
+            "--mic-backend",
+            "fake",
+            "--audio-backend",
+            "null",
             "--no-play-audio",
         ]
     )
 
     assert args.url == "ws://127.0.0.1:8005/pipeline/stream"
     assert args.output_dir == Path("/tmp/interactive")
+    assert args.mic_backend == "fake"
+    assert args.audio_backend == "null"
     assert args.play_audio is False
 
 
 def test_chunk_samples_for_ms_uses_16k_pcm_window() -> None:
     assert interactive.chunk_samples_for_ms(16000, 40) == 640
+
+
+@pytest.mark.asyncio
+async def test_fake_mic_backend_generates_valid_pcm16le_chunk() -> None:
+    mic = interactive.FakeMicBackend(sample_rate=16000, chunk_ms=40)
+
+    await mic.start()
+    chunk = await mic.read_chunk()
+    await mic.stop()
+    await mic.close()
+
+    assert len(chunk) == 640 * 2
+    assert isinstance(chunk, bytes)
+
+
+def test_backend_factories_support_fake_mic_and_null_audio() -> None:
+    mic = interactive.create_microphone_backend("fake", sample_rate=16000, chunk_ms=40)
+    audio_sink = interactive.create_audio_sink("null")
+
+    assert isinstance(mic, interactive.FakeMicBackend)
+    assert isinstance(audio_sink, interactive.MemoryAudioSink)
 
 
 def test_interactive_demo_client_help_runs_when_executed_by_path_with_src_pythonpath() -> None:

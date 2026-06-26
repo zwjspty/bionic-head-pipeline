@@ -33,6 +33,9 @@
   - Hermetic unit tests with fake websocket, fake mic, fake commands.
 - Modify `docs/operations/local-demo-client.md`
   - Add real interactive mic client commands.
+- Support CLI backend selectors:
+  - `--mic-backend sounddevice|fake`
+  - `--audio-backend sounddevice|null`
 - Optionally modify `pyproject.toml`
   - Only if a new optional extra is needed. Prefer reusing `client-audio`.
 
@@ -521,3 +524,27 @@ git log --oneline -8
 ```
 
 Expected: branch is `task14-interactive-mic-client`; working tree is clean after commits.
+
+---
+
+## Task 14.6: Backend selector refinement
+
+**Files:**
+- Modify: `scripts/interactive_demo_client.py`
+- Modify: `tests/unit/test_interactive_demo_client.py`
+- Modify: `docs/operations/local-demo-client.md`
+- Modify: `docs/superpowers/specs/2026-06-26-task14-interactive-mic-client-design.md`
+
+- [x] Add `FakeMicBackend` as a public no-hardware microphone backend.
+- [x] Add `create_microphone_backend("sounddevice"|"fake", ...)`.
+- [x] Add `create_audio_sink("sounddevice"|"null")`.
+- [x] Add parser flags:
+
+```text
+--mic-backend sounddevice|fake
+--audio-backend sounddevice|null
+```
+
+- [x] Preserve `--play-audio/--no-play-audio` compatibility.
+- [x] Document the real run command and fake/null smoke command.
+- [x] Document that Task 14 has no AEC and headphones are recommended.

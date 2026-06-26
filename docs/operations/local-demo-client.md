@@ -97,19 +97,27 @@ Run the interactive client:
 .venv/bin/python scripts/interactive_demo_client.py \
   --url ws://127.0.0.1:8005/pipeline/stream \
   --output-dir /tmp/bionic-interactive-demo \
+  --mic-backend sounddevice \
+  --audio-backend sounddevice \
   --chunk-ms 40 \
   --play-audio
 ```
 
-For a microphone-only protocol smoke without local speaker playback:
+For a protocol smoke without real microphone or speaker playback:
 
 ```bash
 .venv/bin/python scripts/interactive_demo_client.py \
   --url ws://127.0.0.1:8005/pipeline/stream \
-  --output-dir /tmp/bionic-interactive-demo-no-audio \
+  --output-dir /tmp/bionic-interactive-demo-fake \
+  --mic-backend fake \
+  --audio-backend null \
   --chunk-ms 40 \
   --no-play-audio
 ```
+
+When using `--mic-backend sounddevice`, wear headphones if possible. Task 14 does not include
+acoustic echo cancellation, so speaker output can be captured by the microphone and sent back
+into the pipeline.
 
 Controls:
 
