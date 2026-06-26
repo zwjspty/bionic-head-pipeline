@@ -11,6 +11,7 @@ from bionic_head.adapters.registry import AdapterRegistry
 from bionic_head.config import AppSettings
 from bionic_head.core.artifacts import ArtifactStore
 from bionic_head.core.audio import inspect_wav
+from bionic_head.core.history import ConversationHistoryStore
 from bionic_head.core.sentences import SentenceBuffer
 from bionic_head.core.state import TurnHandle
 from bionic_head.core.timeline import Timeline
@@ -256,6 +257,7 @@ class StreamOrchestrator:
     settings: AppSettings
     registry: AdapterRegistry
     store: ArtifactStore
+    history: ConversationHistoryStore | None = None
 
     async def run(
         self,

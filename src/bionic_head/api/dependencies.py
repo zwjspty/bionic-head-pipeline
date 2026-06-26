@@ -13,6 +13,7 @@ from fastapi import Request
 from bionic_head.adapters.registry import AdapterRegistry, ProviderCancelResult, build_registry
 from bionic_head.config import AppSettings
 from bionic_head.core.artifacts import ArtifactStore
+from bionic_head.core.history import ConversationHistoryStore
 from bionic_head.domain.errors import ErrorCode, PipelineException
 from bionic_head.domain.models import DiagnosticResult
 from bionic_head.orchestrators.offline import CommitCallback, OfflineOrchestrator
@@ -84,6 +85,7 @@ class AppContainer:
     registry: AdapterRegistry
     store: ArtifactStore
     sessions: SessionManager
+    history: ConversationHistoryStore | None = None
     last_provider_cancel_results: list[ProviderCancelResult] = field(default_factory=list)
 
     @classmethod
@@ -92,6 +94,11 @@ class AppContainer:
             settings=settings,
             registry=build_registry(settings),
             store=ArtifactStore(settings.storage.root),
+            history=ConversationHistoryStore(
+                enabled=settings.history.enabled,
+                max_turn_pairs=settings.history.max_turn_pairs,
+                max_chars=settings.history.max_chars,
+            ),
             sessions=SessionManager(max_active_sessions=settings.server.max_active_sessions),
         )
 
@@ -108,6 +115,7 @@ class AppContainer:
             settings=self.settings,
             registry=self.registry,
             store=self.store,
+            history=self.history,
         )
 
     async def prewarm(self) -> list[DiagnosticResult]:
