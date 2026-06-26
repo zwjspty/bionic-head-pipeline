@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 
 class ScriptedAction(str, Enum):
@@ -32,3 +33,36 @@ def build_scripted_actions(*, turn_count: int, cancel_first_turn: bool) -> list[
             actions.append(ScriptedAction.WAIT_FOR_PIPELINE_DONE)
     actions.append(ScriptedAction.QUIT)
     return actions
+
+
+def build_interaction_report(
+    summary: dict[str, Any],
+    *,
+    mode: str,
+    turn_count: int,
+    completed_turn_count: int,
+    cancelled_turn_count: int,
+) -> dict[str, Any]:
+    report = {
+        "success": summary.get("terminal_event") == "server.pipeline.done",
+        "mode": mode,
+        "turn_count": turn_count,
+        "completed_turn_count": completed_turn_count,
+        "cancelled_turn_count": cancelled_turn_count,
+        "playback_stop_count": int(summary.get("playback_stop_count", 0) or 0),
+        "old_generation_audio_play_count": 0,
+        "old_generation_face_display_count": 0,
+        "client_stale_audio_drop_count": int(summary.get("client_stale_audio_drop_count", 0) or 0),
+        "client_stale_face_drop_count": int(summary.get("client_stale_face_drop_count", 0) or 0),
+    }
+    for key in [
+        "client_interrupt_sent_ms",
+        "server_playback_stop_received_ms",
+        "client_audio_stopped_ms",
+        "client_face_buffer_cleared_ms",
+        "client_interrupt_to_playback_stop_ms",
+        "client_interrupt_to_audio_stop_ms",
+        "client_interrupt_to_face_clear_ms",
+    ]:
+        report[key] = summary.get(key)
+    return report

@@ -153,6 +153,36 @@ def test_build_parser_accepts_required_interactive_args() -> None:
     assert args.play_audio is False
 
 
+def test_build_parser_accepts_scripted_smoke_args() -> None:
+    parser = interactive.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--output-dir",
+            "/tmp/scripted",
+            "--mode",
+            "scripted",
+            "--scripted-turns",
+            "2",
+            "--scripted-cancel-after-ms",
+            "300",
+            "--mic-backend",
+            "fake",
+            "--audio-backend",
+            "null",
+            "--no-play-audio",
+        ]
+    )
+
+    assert args.mode == "scripted"
+    assert args.scripted_turns == 2
+    assert args.scripted_cancel_after_ms == 300
+    assert args.mic_backend == "fake"
+    assert args.audio_backend == "null"
+
+
 def test_chunk_samples_for_ms_uses_16k_pcm_window() -> None:
     assert interactive.chunk_samples_for_ms(16000, 40) == 640
 
