@@ -24,7 +24,7 @@
 
 ## Task 15.1: Scripted command plan
 
-- [ ] Write failing tests for a deterministic scripted command plan that produces:
+- [x] Write failing tests for a deterministic scripted command plan that produces:
 
 ```text
 start_recording
@@ -38,12 +38,12 @@ wait_for_done
 quit
 ```
 
-- [ ] Implement `ScriptedAction`, `ScriptedController`, or equivalent in `src/bionic_head/client/scripted.py`.
-- [ ] Verify focused tests pass.
+- [x] Implement `ScriptedAction`, `ScriptedController`, or equivalent in `src/bionic_head/client/scripted.py`.
+- [x] Verify focused tests pass.
 
 ## Task 15.2: Scripted fake mic turns
 
-- [ ] Write failing tests that run `interactive_demo_client` in scripted mode with fake websocket/fake mic and verify:
+- [x] Write failing tests that run `interactive_demo_client` in scripted mode with fake websocket/fake mic and verify:
 
 ```text
 client.session.start
@@ -52,20 +52,20 @@ client.turn.cancel
 turn 2 client.audio.start/chunk/binary/end
 ```
 
-- [ ] Implement `--mode scripted`, `--scripted-turns`, and `--scripted-cancel-after-ms`.
-- [ ] Reuse `FakeMicBackend`.
-- [ ] Verify focused tests pass.
+- [x] Implement `--mode scripted`, `--scripted-turns`, and `--scripted-cancel-after-ms`.
+- [x] Reuse `FakeMicBackend`.
+- [x] Verify focused tests pass.
 
 ## Task 15.3: Scripted cancel after playback
 
-- [ ] Write failing tests where the fake server sends `server.tts.audio` + binary before `server.playback.stop`.
-- [ ] Verify cancel is sent only after local audio playback begins.
-- [ ] Verify `server.playback.stop` calls audio stop and face clear through `LocalDemoReceiver`.
-- [ ] Verify stale audio/face drop counts remain zero unless the fake server intentionally sends stale events.
+- [x] Write failing tests where the fake server sends `server.tts.audio` + binary before `server.playback.stop`.
+- [x] Verify cancel is sent only after local audio playback begins.
+- [x] Verify `server.playback.stop` calls audio stop and face clear through `LocalDemoReceiver`.
+- [x] Verify stale audio/face drop counts remain zero unless the fake server intentionally sends stale events.
 
 ## Task 15.4: Interaction report
 
-- [ ] Write failing tests for `interaction_report.json`.
+- [x] Write failing tests for `interaction_report.json`.
 - [ ] Include:
 
 ```text
@@ -88,17 +88,17 @@ client_interrupt_to_audio_stop_ms
 client_interrupt_to_face_clear_ms
 ```
 
-- [ ] Verify report is written for scripted mode.
+- [x] Verify report is written for scripted mode.
 
 ## Task 15.5: Docs and final verification
 
-- [ ] Create `docs/operations/interactive-demo-client.md`.
-- [ ] Document:
+- [x] Create `docs/operations/interactive-demo-client.md`.
+- [x] Document:
   - real interactive microphone mode;
   - scripted fake/null smoke mode;
   - no AEC / wear headphones warning;
   - expected `interaction_report.json`.
-- [ ] Run:
+- [x] Run:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_scripted_interactive_client.py tests/unit/test_interactive_demo_client.py -q

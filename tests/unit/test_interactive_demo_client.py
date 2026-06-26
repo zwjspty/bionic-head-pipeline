@@ -229,6 +229,27 @@ def test_interactive_demo_client_help_runs_when_executed_by_path_with_src_python
     assert "--output-dir" in result.stdout
 
 
+def test_interactive_demo_client_help_runs_when_executed_by_path_without_pythonpath() -> None:
+    env = {
+        **os.environ,
+    }
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "scripts/interactive_demo_client.py", "--help"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--mode" in result.stdout
+    assert "--scripted-turns" in result.stdout
+
+
 @pytest.mark.asyncio
 async def test_interactive_enter_enter_sends_audio_turn(monkeypatch, tmp_path) -> None:
     websocket = CommandAwareFakeWebSocket()
