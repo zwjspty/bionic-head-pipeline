@@ -11,7 +11,7 @@ from bionic_head.adapters.registry import AdapterRegistry
 from bionic_head.config import AppSettings
 from bionic_head.core.artifacts import ArtifactStore
 from bionic_head.core.audio import inspect_wav
-from bionic_head.core.history import ConversationHistoryStore
+from bionic_head.core.history import ConversationHistoryMetrics, ConversationHistoryStore
 from bionic_head.core.sentences import SentenceBuffer
 from bionic_head.core.state import TurnHandle
 from bionic_head.core.timeline import Timeline
@@ -196,6 +196,11 @@ class _StreamTiming:
     segments: dict[str, _StreamSegmentTiming] = field(default_factory=dict)
     old_turn_face_leak_count: int = 0
     stale_face_drop_count: int = 0
+    history_enabled: bool = False
+    history_turn_count_before: int = 0
+    history_char_count_before: int = 0
+    history_turn_count_after: int = 0
+    history_char_count_after: int = 0
     _stale_counted_segments: set[str] = field(default_factory=set)
 
     def elapsed_ms(self, at_ns: int | None = None) -> float:
@@ -237,6 +242,18 @@ class _StreamTiming:
         if segment is not None:
             segment.stale_dropped = True
 
+    def record_history_before(self, metrics: ConversationHistoryMetrics) -> None:
+        self.history_enabled = metrics.enabled
+        self.history_turn_count_before = metrics.turn_count
+        self.history_char_count_before = metrics.char_count
+        self.history_turn_count_after = metrics.turn_count
+        self.history_char_count_after = metrics.char_count
+
+    def record_history_after(self, metrics: ConversationHistoryMetrics) -> None:
+        self.history_enabled = metrics.enabled
+        self.history_turn_count_after = metrics.turn_count
+        self.history_char_count_after = metrics.char_count
+
     def snapshot(self) -> dict[str, object]:
         return {
             "segments": [
@@ -245,6 +262,11 @@ class _StreamTiming:
             ],
             "old_turn_face_leak_count": self.old_turn_face_leak_count,
             "stale_face_drop_count": self.stale_face_drop_count,
+            "history_enabled": self.history_enabled,
+            "history_turn_count_before": self.history_turn_count_before,
+            "history_char_count_before": self.history_char_count_before,
+            "history_turn_count_after": self.history_turn_count_after,
+            "history_char_count_after": self.history_char_count_after,
         }
 
 
@@ -270,6 +292,8 @@ class StreamOrchestrator:
         factory = event_factory or EventFactory(session_id=turn.session_id)
         timeline = Timeline()
         stream_timing = _StreamTiming(run_started_ns=monotonic_ns())
+        if self.history is not None:
+            stream_timing.record_history_before(self.history.metrics(turn.session_id))
         face_stitcher = FaceSegmentStitcher(
             enabled=self.settings.face_stitching.enabled,
             overlap_frames=self.settings.face_stitching.overlap_frames,
@@ -504,6 +528,7 @@ class StreamOrchestrator:
                     user=artifacts.asr.text,
                     assistant=artifacts.llm.reply,
                 )
+                stream_timing.record_history_after(self.history.metrics(turn.session_id))
             self._ensure_current(turn)
             if await turn.emit_terminal_once(EventType.SERVER_PIPELINE_DONE):
                 await emit_json(factory.server(EventType.SERVER_PIPELINE_DONE, turn.turn_id, {}))
