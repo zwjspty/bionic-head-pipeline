@@ -78,3 +78,64 @@ Expected summary fields:
 - `client_stale_audio_drop_count` and `client_stale_face_drop_count` record stale old-generation drops.
 
 Note: `--play-audio` remains the default, but `--no-play-audio` is the preferred flag for headless smoke runs. If playback is enabled, `sounddevice` is optional at runtime and used only when `--play-audio` is set.
+
+## Interactive microphone demo
+
+Use this when you want to speak into the microphone instead of sending a prepared WAV file.
+This is still a minimal terminal client: it does not include acoustic echo cancellation, WebRTC,
+browser UI, UE5 runtime integration, or real-time Blender rendering.
+
+Install optional client audio dependencies:
+
+```bash
+.venv/bin/python -m pip install -e ".[client,client-audio]"
+```
+
+Run the interactive client:
+
+```bash
+.venv/bin/python scripts/interactive_demo_client.py \
+  --url ws://127.0.0.1:8005/pipeline/stream \
+  --output-dir /tmp/bionic-interactive-demo \
+  --mic-backend sounddevice \
+  --audio-backend sounddevice \
+  --chunk-ms 40 \
+  --play-audio
+```
+
+For a protocol smoke without real microphone or speaker playback:
+
+```bash
+.venv/bin/python scripts/interactive_demo_client.py \
+  --url ws://127.0.0.1:8005/pipeline/stream \
+  --output-dir /tmp/bionic-interactive-demo-fake \
+  --mic-backend fake \
+  --audio-backend null \
+  --chunk-ms 40 \
+  --no-play-audio
+```
+
+When using `--mic-backend sounddevice`, wear headphones if possible. Task 14 does not include
+acoustic echo cancellation, so speaker output can be captured by the microphone and sent back
+into the pipeline.
+
+Controls:
+
+- `Enter`: start recording if idle, stop recording if already recording.
+- `c`: manually interrupt current playback by sending `client.turn.cancel`.
+- `q`: quit the client.
+
+Generated artifacts are the same as the local WAV demo:
+
+- `summary.json`
+- `client_playback_metrics.json`
+- `tts/{chunk_id}.wav`
+- `ue5/{chunk_id}.json`
+
+Interactive summary adds microphone-side counters:
+
+- `client_mic_recording_started_count`
+- `client_mic_recording_stopped_count`
+- `client_mic_chunks_sent`
+- `client_mic_bytes_sent`
+- `client_manual_cancel_count`
