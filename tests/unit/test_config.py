@@ -31,6 +31,9 @@ def test_load_mock_settings() -> None:
     assert settings.eye_continuity.blink_strength == pytest.approx(1.0)
     assert settings.eye_continuity.seed == 42
     assert settings.eye_continuity.reset_blink_on_new_turn is False
+    assert settings.history.enabled is True
+    assert settings.history.max_turn_pairs == 6
+    assert settings.history.max_chars == 3000
 
 
 def test_load_real_example_settings() -> None:
@@ -244,6 +247,22 @@ def test_accepts_eye_continuity_config() -> None:
     assert settings.eye_continuity.blink_strength == pytest.approx(0.8)
     assert settings.eye_continuity.seed == 123
     assert settings.eye_continuity.reset_blink_on_new_turn is True
+
+
+def test_accepts_history_config() -> None:
+    settings = AppSettings.model_validate(
+        {
+            "history": {
+                "enabled": False,
+                "max_turn_pairs": 3,
+                "max_chars": 512,
+            }
+        }
+    )
+
+    assert settings.history.enabled is False
+    assert settings.history.max_turn_pairs == 3
+    assert settings.history.max_chars == 512
 
 
 @pytest.mark.parametrize(

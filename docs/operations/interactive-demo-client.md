@@ -77,6 +77,27 @@ old_generation_audio_play_count: 0
 old_generation_face_display_count: 0
 ```
 
+With Task 16 enabled, the same command also exercises the normal multi-turn WebSocket session path while keeping the first-turn cancel behavior. The client-side report does not inspect server-internal LLM prompts; session history is verified on the server side through stream tests and `timeline.json` history metrics.
+
+For a completed turn, the server-side run timeline contains:
+
+```text
+stream.history_enabled: true
+stream.history_turn_count_before
+stream.history_char_count_before
+stream.history_turn_count_after
+stream.history_char_count_after
+```
+
+The expected Task 16 behavior is:
+
+```text
+same WebSocket session
+-> successful turn appends user + assistant
+-> later turn LLM receives previous user/assistant messages
+-> cancelled / stale / error turns do not append assistant replies
+```
+
 ## Real interactive microphone mode
 
 Install optional audio dependencies:

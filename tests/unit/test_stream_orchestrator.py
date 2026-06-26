@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from bionic_head.adapters.registry import AdapterRegistry, build_registry
+from bionic_head.core.history import ConversationHistoryStore
 from bionic_head.domain.models import (
     AudioArtifact,
     DiagnosticResult,
@@ -179,6 +180,55 @@ class _DelayedTokenLLMAdapter:
         await asyncio.sleep(0)
 
 
+class _RecordingHistoryLLMAdapter:
+    name = "recording-history-llm"
+
+    def __init__(self, *, reply: str = "我记住了") -> None:
+        self.reply = reply
+        self.calls: list[dict[str, object]] = []
+
+    async def chat(
+        self,
+        text: str,
+        history: list[dict[str, str]],
+        context: TurnContext,
+    ) -> LLMResult:
+        return LLMResult(reply=self.reply, emotion=Emotion.FRIENDLY, intensity=0.8)
+
+    async def _chat_stream(
+        self,
+        text: str,
+        history: list[dict[str, str]],
+        context: TurnContext,
+    ) -> AsyncIterator[LLMEvent]:
+        self.calls.append({"text": text, "history": history})
+        yield LLMEvent(kind="token", text=self.reply)
+        yield LLMEvent(
+            kind="final",
+            result=LLMResult(reply=self.reply, emotion=Emotion.FRIENDLY, intensity=0.8),
+        )
+
+    def chat_stream(
+        self,
+        text: str,
+        history: list[dict[str, str]],
+        context: TurnContext,
+    ) -> AsyncIterator[LLMEvent]:
+        return self._chat_stream(text, history, context)
+
+    async def diagnostics(self) -> DiagnosticResult:
+        return DiagnosticResult(
+            adapter="llm",
+            provider=self.name,
+            available=True,
+            latency_ms=0.0,
+            message="test adapter ready",
+        )
+
+    async def cancel(self, turn_id) -> None:
+        await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 async def test_stream_emits_audio_before_face_then_segment_ready(stream_harness) -> None:
     await stream_harness.run()
@@ -191,6 +241,176 @@ async def test_stream_emits_audio_before_face_then_segment_ready(stream_harness)
     assert stream_harness.terminal_types == ["server.pipeline.done"]
     assert len(stream_harness.binary_frames) >= 1
     assert len(stream_harness.binary_frames) == types.count("server.tts.audio")
+
+
+@pytest.mark.asyncio
+async def test_stream_passes_session_history_to_llm(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.asr_text = "我叫什么？"
+    history = ConversationHistoryStore(max_turn_pairs=6, max_chars=3000)
+    llm = _RecordingHistoryLLMAdapter(reply="你叫小张。")
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=llm,
+        tts=registry.tts,
+        audio2face=registry.audio2face,
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry, history=history)
+    history.append_pair(
+        harness.turn.session_id,
+        user="我叫小张。",
+        assistant="你好小张。",
+    )
+
+    await harness.run()
+
+    assert llm.calls[0]["text"] == "我叫什么？"
+    assert llm.calls[0]["history"] == [
+        {"role": "user", "content": "我叫小张。"},
+        {"role": "assistant", "content": "你好小张。"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_commits_successful_turn_to_session_history(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.asr_text = "我叫小张。"
+    history = ConversationHistoryStore(max_turn_pairs=6, max_chars=3000)
+    llm = _RecordingHistoryLLMAdapter(reply="你好小张。")
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=llm,
+        tts=registry.tts,
+        audio2face=registry.audio2face,
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry, history=history)
+
+    await harness.run()
+
+    assert harness.terminal_types == ["server.pipeline.done"]
+    assert history.get(harness.turn.session_id) == [
+        {"role": "user", "content": "我叫小张。"},
+        {"role": "assistant", "content": "你好小张。"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_records_history_metrics_in_timeline(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    history = ConversationHistoryStore(max_turn_pairs=6, max_chars=3000)
+    harness = stream_harness_factory(history=history)
+    history.append_pair(
+        harness.turn.session_id,
+        user="我叫小张。",
+        assistant="你好小张。",
+    )
+
+    await harness.run()
+
+    timeline_path = (
+        harness.store.runs
+        / str(harness.turn.session_id)
+        / str(harness.turn.turn_id)
+        / "timeline.json"
+    )
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    stream = timeline["stream"]
+
+    assert stream["history_enabled"] is True
+    assert stream["history_turn_count_before"] == 1
+    assert stream["history_turn_count_after"] == 2
+    assert stream["history_char_count_before"] == len("我叫小张。你好小张。")
+    assert stream["history_char_count_after"] > stream["history_char_count_before"]
+
+
+@pytest.mark.asyncio
+async def test_stream_provider_error_does_not_commit_history(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.fail_stage = "tts"
+    history = ConversationHistoryStore(max_turn_pairs=6, max_chars=3000)
+    harness = stream_harness_factory(
+        settings=settings,
+        registry=build_registry(settings),
+        history=history,
+    )
+
+    await harness.run()
+
+    assert harness.terminal_types == ["server.pipeline.error"]
+    assert history.get(harness.turn.session_id) == []
+
+
+@pytest.mark.asyncio
+async def test_stream_cancel_does_not_commit_history(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.latency_ms.face = 50
+    history = ConversationHistoryStore(max_turn_pairs=6, max_chars=3000)
+    harness = stream_harness_factory(
+        settings=settings,
+        registry=build_registry(settings),
+        history=history,
+    )
+    emit_binary_pair = harness.emit_binary_pair
+
+    async def emit_then_cancel(envelope, binary: bytes) -> None:
+        await emit_binary_pair(envelope, binary)
+        asyncio.create_task(harness.turn.cancel())
+
+    harness.emit_binary_pair = emit_then_cancel
+
+    await harness.run()
+
+    assert harness.terminal_types == ["server.turn.cancelled"]
+    assert history.get(harness.turn.session_id) == []
+
+
+@pytest.mark.asyncio
+async def test_stream_stale_epoch_does_not_commit_history(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.latency_ms.face = 50
+    history = ConversationHistoryStore(max_turn_pairs=6, max_chars=3000)
+    harness = stream_harness_factory(
+        settings=settings,
+        registry=build_registry(settings),
+        history=history,
+    )
+    current_epoch = 0
+    harness.turn.generation_epoch = current_epoch
+    harness.turn.generation_epoch_getter = lambda: current_epoch
+    emit_binary_pair = harness.emit_binary_pair
+
+    async def emit_then_stale(envelope, binary: bytes) -> None:
+        nonlocal current_epoch
+        await emit_binary_pair(envelope, binary)
+        current_epoch += 1
+
+    harness.emit_binary_pair = emit_then_stale
+
+    await harness.run()
+
+    assert harness.terminal_types == ["server.turn.cancelled"]
+    assert history.get(harness.turn.session_id) == []
 
 
 @pytest.mark.asyncio

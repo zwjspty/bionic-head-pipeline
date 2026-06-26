@@ -96,10 +96,11 @@ def app(mock_settings, tmp_path: Path):
 
 
 class StreamHarness:
-    def __init__(self, *, settings, registry, store, input_wav: Path) -> None:
+    def __init__(self, *, settings, registry, store, input_wav: Path, history=None) -> None:
         self.settings = settings
         self.registry = registry
         self.store = store
+        self.history = history
         self.input_wav = input_wav
         self.turn = TurnHandle(session_id=uuid4(), turn_id=uuid4())
         self.json_envelopes = []
@@ -134,6 +135,7 @@ class StreamHarness:
             settings=self.settings,
             registry=self.registry,
             store=self.store,
+            history=self.history,
         )
         await orchestrator.run(
             self.input_wav,
@@ -152,12 +154,13 @@ class StreamHarness:
 
 @pytest.fixture
 def stream_harness_factory(mock_settings, mock_registry, artifact_store, speech_wav):
-    def build(*, settings=mock_settings, registry=mock_registry, input_wav=speech_wav):
+    def build(*, settings=mock_settings, registry=mock_registry, input_wav=speech_wav, history=None):
         return StreamHarness(
             settings=settings,
             registry=registry,
             store=artifact_store,
             input_wav=input_wav,
+            history=history,
         )
 
     return build

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from bionic_head.api.dependencies import AppContainer
+from bionic_head.core.history import ConversationHistoryStore
 from bionic_head.domain.errors import ErrorCode, PipelineException
 from bionic_head.domain.models import DiagnosticResult
 
@@ -62,6 +63,20 @@ class _ClosableAudio2Face:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def test_container_create_initializes_history_store(mock_settings, tmp_path) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.storage.root = tmp_path / "data"
+    settings.history.max_turn_pairs = 3
+    settings.history.max_chars = 512
+
+    container = AppContainer.create(settings)
+
+    assert isinstance(container.history, ConversationHistoryStore)
+    assert container.history.enabled is True
+    assert container.history.max_turn_pairs == 3
+    assert container.history.max_chars == 512
 
 
 @pytest.mark.asyncio

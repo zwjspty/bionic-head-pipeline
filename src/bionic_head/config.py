@@ -91,6 +91,14 @@ class EyeContinuitySettings(BaseModel):
         return self
 
 
+class HistorySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_turn_pairs: int = Field(default=6, ge=1)
+    max_chars: int = Field(default=3000, ge=1)
+
+
 class AdapterSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -236,6 +244,7 @@ class AppSettings(BaseModel):
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     face_stitching: FaceStitchingSettings = Field(default_factory=FaceStitchingSettings)
     eye_continuity: EyeContinuitySettings = Field(default_factory=EyeContinuitySettings)
+    history: HistorySettings = Field(default_factory=HistorySettings)
     adapters: AdaptersSettings = Field(default_factory=AdaptersSettings)
     mock: MockSettings = Field(default_factory=MockSettings)
     providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
