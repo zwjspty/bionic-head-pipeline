@@ -2,7 +2,7 @@
 
 ## 总体判断
 
-项目目前已经完成一个真实可运行、可观测、低延迟、具备最小打断能力的准实时数字人原型。
+项目目前已经完成一个真实可运行、可观测、低延迟、具备最小打断能力，并且具备客户端侧自动验收闭环的本地交互式数字人原型。
 
 更准确地说：
 
@@ -15,9 +15,9 @@
 当前阶段名称：
 
 ```text
-实验室级准实时数字人 MVP
-—— 正在从“管线能跑且较快”
-进入“真实交互正确性与体验收口”
+可回归的本地交互式数字人 MVP
+—— 已经从“管线能跑且较快”
+进入“客户端可交互、可打断、可自动验收”
 ```
 
 ## 当前能力状态
@@ -32,6 +32,10 @@
 | RMS barge-in / playback.stop | 最小实现完成 | 缺真实播放/AEC验收 |
 | Face crossfade | 已完成 | 真实多段样本有效 |
 | Eye continuity | 框架完成 | 默认配置 no-op |
+| Local WAV demo client | 已完成 | 可保存 TTS/UE5/summary |
+| Playback interrupt validation | 已完成 | 可验证 playback.stop 后本地 stop/clear |
+| Interactive microphone client | 已完成 | 支持真实麦克风、按键录音、按键打断 |
+| Scripted interactive smoke | 已完成 | fake mic + null audio 可重复自动验收 |
 | 多轮对话记忆 | 未实现 | 每个 turn 仍独立问答 |
 | chunked / partial ASR | 未实现 | ASR 仍在端点后整段识别 |
 | 真实 UE5 | 未实现 | 当前只是 raw 52 维协议 |
@@ -59,6 +63,43 @@ stale_face_drop_count         = 0
 - 下一步更重要的是取消正确性、真实音画同步和多轮记忆，而不是盲目继续压模型耗时。
 
 ## 已完成的关键工程升级
+
+### 0. 客户端侧可回归验收闭环
+
+Task 12–15 已经完成：
+
+```text
+Task 12: local demo client                  ✅
+Task 13: playback interrupt validation      ✅
+Task 14: interactive mic client             ✅
+Task 15: scripted interactive smoke         ✅
+```
+
+当前已经具备：
+
+```text
+fake mic 两轮输入
+第一轮播放中 cancel
+server.playback.stop 后本地 audio stop / face clear
+第二轮继续完成
+interaction_report.json 验收产物
+```
+
+真实 mock-server smoke 最近验收结果：
+
+```text
+success: true
+mode: scripted
+turn_count: 2
+completed_turn_count: 1
+cancelled_turn_count: 1
+playback_stop_count: 1
+old_generation_audio_play_count: 0
+old_generation_face_display_count: 0
+client_stale_audio_drop_count: 0
+client_stale_face_drop_count: 0
+terminal_event: server.pipeline.done
+```
 
 ### 1. 模块边界清晰
 
