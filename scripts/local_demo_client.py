@@ -334,6 +334,8 @@ class LocalDemoReceiver:
         session_id: UUID | None = None,
         turn_id: UUID | None = None,
         clock: Callable[[], float] = perf_counter,
+        terminal_types: set[str] | None = None,
+        allow_turn_switch: bool = False,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.audio = audio
@@ -343,6 +345,8 @@ class LocalDemoReceiver:
         self._clock = clock
         self._started_at = clock()
         self._metrics = audio.metrics
+        self._terminal_types = terminal_types or TERMINAL_TYPES
+        self._allow_turn_switch = allow_turn_switch
         self.next_sequence = 1
         self.pending_tts: PendingTTS | None = None
         self._discard_next_tts_binary: PendingDiscardTTSBinary | None = None
@@ -408,9 +412,10 @@ class LocalDemoReceiver:
         if event_type == "server.turn.cancelled":
             self._metrics.mark_playback_stop_received()
             self._clear_pending_playback()
-            self._mark_terminal(event_type, received_ms)
+            if event_type in self._terminal_types:
+                self._mark_terminal(event_type, received_ms)
             return
-        if event_type in TERMINAL_TYPES:
+        if event_type in self._terminal_types:
             self._mark_terminal(event_type, received_ms)
 
     def accept_binary(self, payload: bytes) -> None:
@@ -460,7 +465,10 @@ class LocalDemoReceiver:
             if self.turn_id is None:
                 self.turn_id = parsed_turn_id
             elif parsed_turn_id != self.turn_id:
-                raise ProtocolError("server event turn_id does not match")
+                if not self._allow_turn_switch:
+                    raise ProtocolError("server event turn_id does not match")
+                self.turn_id = parsed_turn_id
+                self.next_ue5_frame_index_by_segment.clear()
 
     def _accept_tts_metadata(self, payload: dict[str, object]) -> None:
         if self.pending_tts is not None or self._discard_next_tts_binary is not None:

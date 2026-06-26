@@ -153,6 +153,36 @@ def test_build_parser_accepts_required_interactive_args() -> None:
     assert args.play_audio is False
 
 
+def test_build_parser_accepts_scripted_smoke_args() -> None:
+    parser = interactive.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--output-dir",
+            "/tmp/scripted",
+            "--mode",
+            "scripted",
+            "--scripted-turns",
+            "2",
+            "--scripted-cancel-after-ms",
+            "300",
+            "--mic-backend",
+            "fake",
+            "--audio-backend",
+            "null",
+            "--no-play-audio",
+        ]
+    )
+
+    assert args.mode == "scripted"
+    assert args.scripted_turns == 2
+    assert args.scripted_cancel_after_ms == 300
+    assert args.mic_backend == "fake"
+    assert args.audio_backend == "null"
+
+
 def test_chunk_samples_for_ms_uses_16k_pcm_window() -> None:
     assert interactive.chunk_samples_for_ms(16000, 40) == 640
 
@@ -168,6 +198,7 @@ async def test_fake_mic_backend_generates_valid_pcm16le_chunk() -> None:
 
     assert len(chunk) == 640 * 2
     assert isinstance(chunk, bytes)
+    assert any(chunk)
 
 
 def test_backend_factories_support_fake_mic_and_null_audio() -> None:
@@ -197,6 +228,27 @@ def test_interactive_demo_client_help_runs_when_executed_by_path_with_src_python
     assert result.returncode == 0, result.stderr
     assert "--url" in result.stdout
     assert "--output-dir" in result.stdout
+
+
+def test_interactive_demo_client_help_runs_when_executed_by_path_without_pythonpath() -> None:
+    env = {
+        **os.environ,
+    }
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "scripts/interactive_demo_client.py", "--help"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--mode" in result.stdout
+    assert "--scripted-turns" in result.stdout
 
 
 @pytest.mark.asyncio

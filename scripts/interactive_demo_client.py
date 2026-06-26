@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import math
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ from uuid import UUID, uuid4
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from scripts.local_demo_client import (  # noqa: E402
     AudioPlaybackEngine,
@@ -28,6 +32,7 @@ from scripts.local_demo_client import (  # noqa: E402
     SoundDeviceAudioSink,
 )
 from scripts.stream_client import client_event  # noqa: E402
+from bionic_head.client.scripted import build_interaction_report  # noqa: E402
 
 
 class MicrophoneInput(Protocol):
@@ -69,6 +74,7 @@ class FakeMicBackend:
         self.chunk_ms = chunk_ms
         self._chunks = list(chunks) if chunks is not None else None
         self._active = False
+        self._sample_offset = 0
 
     async def start(self) -> None:
         self._active = True
@@ -83,7 +89,14 @@ class FakeMicBackend:
         await asyncio.sleep(self.chunk_ms / 1000.0)
         if not self._active:
             return b""
-        return b"\x00\x00" * chunk_samples_for_ms(self.sample_rate, self.chunk_ms)
+        sample_count = chunk_samples_for_ms(self.sample_rate, self.chunk_ms)
+        samples = bytearray()
+        for index in range(sample_count):
+            sample_index = self._sample_offset + index
+            value = int(2500 * math.sin(2 * math.pi * 220 * sample_index / self.sample_rate))
+            samples.extend(value.to_bytes(2, byteorder="little", signed=True))
+        self._sample_offset += sample_count
+        return bytes(samples)
 
     async def stop(self) -> None:
         self._active = False
@@ -189,12 +202,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the interactive microphone demo client.")
     parser.add_argument("--url", required=True, help="WebSocket URL, e.g. ws://127.0.0.1:8005/pipeline/stream")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for received audio/frames/summary")
+    parser.add_argument("--mode", choices=["interactive", "scripted"], default="interactive")
+    parser.add_argument("--scripted-turns", type=int, default=2)
+    parser.add_argument("--scripted-cancel-after-ms", type=int, default=300)
     parser.add_argument("--chunk-ms", type=int, default=40, help="Microphone PCM chunk duration in milliseconds")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Microphone sample rate; default is 16 kHz")
     parser.add_argument(
         "--mic-backend",
         choices=["sounddevice", "fake"],
-        default="sounddevice",
+        default=None,
         help="Microphone backend. Use fake for protocol smoke tests without a real microphone.",
     )
     parser.add_argument(
@@ -441,24 +457,227 @@ async def run_interactive_demo(
         return await session.run()
 
 
+async def run_scripted_demo(
+    *,
+    url: str,
+    output_dir: Path,
+    scripted_turns: int,
+    scripted_cancel_after_ms: int,
+    chunk_ms: int,
+    sample_rate: int,
+    audio_backend: str,
+    clock: Callable[[], float] = perf_counter,
+    wait_timeout_sec: float = 5.0,
+) -> str:
+    try:
+        import websockets
+    except ImportError as exc:
+        raise SystemExit("websockets is required; install the client extra") from exc
+    if scripted_turns < 1:
+        raise SystemExit("--scripted-turns must be at least 1")
+
+    session_id = uuid4()
+    turn_ids = [uuid4() for _ in range(scripted_turns)]
+    first_playback_started = asyncio.Event()
+    metrics = PlaybackMetrics(clock=clock)
+    audio = AudioPlaybackEngine(
+        metrics,
+        sink=create_audio_sink(audio_backend),
+        on_first_play=first_playback_started.set,
+    )
+    receiver = LocalDemoReceiver(
+        output_dir,
+        audio,
+        FacePlaybackEngine(metrics),
+        session_id=session_id,
+        turn_id=turn_ids[0],
+        clock=clock,
+        terminal_types={"server.pipeline.done", "server.pipeline.error"},
+        allow_turn_switch=True,
+    )
+    mic_metrics = MicMetrics()
+    sequence = 1
+    receiver_error: BaseException | None = None
+
+    async def wait_until(predicate: Callable[[], bool], *, description: str) -> None:
+        started = perf_counter()
+        while not predicate():
+            if perf_counter() - started > wait_timeout_sec:
+                raise TimeoutError(f"timed out waiting for {description}")
+            await asyncio.sleep(0)
+
+    async def send_event(websocket, event_type: str, turn_id: UUID | None, payload: dict[str, object]) -> None:
+        nonlocal sequence
+        current_sequence = sequence
+        sequence += 1
+        await websocket.send(
+            json.dumps(
+                client_event(
+                    event_type,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    sequence=current_sequence,
+                    payload=payload,
+                )
+            )
+        )
+
+    async def receive_loop(websocket) -> None:
+        nonlocal receiver_error
+        try:
+            while receiver.terminal_event is None:
+                message = await websocket.recv()
+                if isinstance(message, bytes):
+                    receiver.accept_binary(message)
+                else:
+                    receiver.accept_json(json.loads(message))
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            receiver_error = exc
+
+    async def send_fake_turn(websocket, turn_id: UUID, *, reason: str) -> None:
+        await send_event(
+            websocket,
+            "client.audio.start",
+            turn_id,
+            {"sample_rate": sample_rate, "channels": 1, "sample_width_bytes": 2},
+        )
+        mic = FakeMicBackend(
+            sample_rate=sample_rate,
+            chunk_ms=chunk_ms,
+        )
+        await mic.start()
+        mic_metrics.recording_started_count += 1
+        chunk_count = max(1, int(round(1000 / chunk_ms)))
+        for _ in range(chunk_count):
+            chunk = await mic.read_chunk()
+            if not chunk:
+                break
+            await send_event(
+                websocket,
+                "client.audio.chunk",
+                turn_id,
+                {
+                    "byte_length": len(chunk),
+                    "duration_ms": int(len(chunk) / 2 / sample_rate * 1000),
+                },
+            )
+            await websocket.send(chunk)
+            mic_metrics.chunks_sent += 1
+            mic_metrics.bytes_sent += len(chunk)
+        await mic.stop()
+        await mic.close()
+        mic_metrics.recording_stopped_count += 1
+        await send_event(websocket, "client.audio.end", turn_id, {"reason": reason})
+
+    async with websockets.connect(url) as websocket:
+        await send_event(
+            websocket,
+            "client.session.start",
+            None,
+            {"client_name": "interactive_demo_client"},
+        )
+        first = await websocket.recv()
+        if isinstance(first, bytes):
+            raise ProtocolError("expected server.session.ready JSON")
+        first_event = json.loads(first)
+        if first_event.get("type") != "server.session.ready":
+            raise ProtocolError("expected first server event to be server.session.ready")
+        receiver.accept_json(first_event)
+
+        receive_task = asyncio.create_task(receive_loop(websocket))
+        try:
+            for index, turn_id in enumerate(turn_ids):
+                await send_fake_turn(websocket, turn_id, reason="client_end")
+                if index == 0 and scripted_turns > 1:
+                    await asyncio.wait_for(first_playback_started.wait(), timeout=wait_timeout_sec)
+                    if scripted_cancel_after_ms > 0:
+                        await asyncio.sleep(scripted_cancel_after_ms / 1000.0)
+                    metrics.mark_client_interrupt_sent()
+                    mic_metrics.manual_cancel_count += 1
+                    await send_event(
+                        websocket,
+                        "client.turn.cancel",
+                        turn_id,
+                        {"reason": "scripted_playback_interrupt"},
+                    )
+                    await wait_until(
+                        lambda: _event_count(receiver, "server.turn.cancelled") >= 1,
+                        description="server.turn.cancelled",
+                    )
+                elif index == scripted_turns - 1:
+                    await wait_until(
+                        lambda: receiver.terminal_event is not None,
+                        description="terminal event",
+                    )
+            if receiver_error is not None:
+                raise receiver_error
+        finally:
+            if not receive_task.done():
+                receive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await receive_task
+
+    receiver.summary.update(mic_metrics.to_summary())
+    receiver.finish()
+    report = build_interaction_report(
+        {**receiver.summary, **metrics.to_dict()},
+        mode="scripted",
+        turn_count=scripted_turns,
+        completed_turn_count=1 if receiver.terminal_event == "server.pipeline.done" else 0,
+        cancelled_turn_count=1 if _event_count(receiver, "server.turn.cancelled") >= 1 else 0,
+    )
+    (output_dir / "interaction_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return str(receiver.terminal_event)
+
+
+def _event_count(receiver: LocalDemoReceiver, event_type: str) -> int:
+    counts = receiver.summary.get("event_counts")
+    if not isinstance(counts, dict):
+        return 0
+    return int(counts.get(event_type, 0))
+
+
 def main() -> None:
     args = build_parser().parse_args()
-    audio_backend = args.audio_backend or ("sounddevice" if args.play_audio else "null")
-    terminal_event = asyncio.run(
-        run_interactive_demo(
-            url=args.url,
-            output_dir=args.output_dir,
-            command_source=StdinCommandSource(),
-            microphone=create_microphone_backend(
-                args.mic_backend,
-                sample_rate=args.sample_rate,
+    if args.mode == "scripted":
+        mic_backend = args.mic_backend or "fake"
+        audio_backend = args.audio_backend or "null"
+        if mic_backend != "fake":
+            raise SystemExit("scripted mode requires --mic-backend fake")
+        terminal_event = asyncio.run(
+            run_scripted_demo(
+                url=args.url,
+                output_dir=args.output_dir,
+                scripted_turns=args.scripted_turns,
+                scripted_cancel_after_ms=args.scripted_cancel_after_ms,
                 chunk_ms=args.chunk_ms,
-            ),
-            audio_backend=audio_backend,
-            chunk_ms=args.chunk_ms,
-            sample_rate=args.sample_rate,
+                sample_rate=args.sample_rate,
+                audio_backend=audio_backend,
+            )
         )
-    )
+    else:
+        mic_backend = args.mic_backend or "sounddevice"
+        audio_backend = args.audio_backend or ("sounddevice" if args.play_audio else "null")
+        terminal_event = asyncio.run(
+            run_interactive_demo(
+                url=args.url,
+                output_dir=args.output_dir,
+                command_source=StdinCommandSource(),
+                microphone=create_microphone_backend(
+                    mic_backend,
+                    sample_rate=args.sample_rate,
+                    chunk_ms=args.chunk_ms,
+                ),
+                audio_backend=audio_backend,
+                chunk_ms=args.chunk_ms,
+                sample_rate=args.sample_rate,
+            )
+        )
     print(
         json.dumps(
             {
