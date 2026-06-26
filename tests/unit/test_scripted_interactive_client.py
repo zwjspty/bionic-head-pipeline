@@ -244,16 +244,19 @@ async def test_scripted_mode_runs_two_fake_turns_and_writes_report(monkeypatch, 
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
 
     assert terminal == "server.pipeline.done"
-    assert sent_types == [
-        "client.session.start",
-        "client.audio.start",
-        "client.audio.chunk",
-        "client.audio.end",
-        "client.turn.cancel",
-        "client.audio.start",
-        "client.audio.chunk",
-        "client.audio.end",
-    ]
+    assert sent_types[0] == "client.session.start"
+    assert sent_types.count("client.audio.start") == 2
+    assert sent_types.count("client.audio.chunk") >= 10
+    assert sent_types.count("client.audio.end") == 2
+    assert sent_types.count("client.turn.cancel") == 1
+    assert sent_types.index("client.turn.cancel") > sent_types.index("client.audio.end")
+    assert sent_types.index("client.turn.cancel") < sent_types.index("client.audio.start", 2)
+    assert "mode" not in websocket.sent_json()[0]["payload"]
+    assert [
+        event["payload"].get("reason")
+        for event in websocket.sent_json()
+        if event["type"] == "client.audio.end"
+    ] == ["client_end", "client_end"]
     assert report["success"] is True
     assert report["mode"] == "scripted"
     assert report["turn_count"] == 2

@@ -198,6 +198,7 @@ async def test_fake_mic_backend_generates_valid_pcm16le_chunk() -> None:
 
     assert len(chunk) == 640 * 2
     assert isinstance(chunk, bytes)
+    assert any(chunk)
 
 
 def test_backend_factories_support_fake_mic_and_null_audio() -> None:

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import math
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ class FakeMicBackend:
         self.chunk_ms = chunk_ms
         self._chunks = list(chunks) if chunks is not None else None
         self._active = False
+        self._sample_offset = 0
 
     async def start(self) -> None:
         self._active = True
@@ -87,7 +89,14 @@ class FakeMicBackend:
         await asyncio.sleep(self.chunk_ms / 1000.0)
         if not self._active:
             return b""
-        return b"\x00\x00" * chunk_samples_for_ms(self.sample_rate, self.chunk_ms)
+        sample_count = chunk_samples_for_ms(self.sample_rate, self.chunk_ms)
+        samples = bytearray()
+        for index in range(sample_count):
+            sample_index = self._sample_offset + index
+            value = int(2500 * math.sin(2 * math.pi * 220 * sample_index / self.sample_rate))
+            samples.extend(value.to_bytes(2, byteorder="little", signed=True))
+        self._sample_offset += sample_count
+        return bytes(samples)
 
     async def stop(self) -> None:
         self._active = False
@@ -537,11 +546,11 @@ async def run_scripted_demo(
         mic = FakeMicBackend(
             sample_rate=sample_rate,
             chunk_ms=chunk_ms,
-            chunks=[b"\x00\x00" * chunk_samples_for_ms(sample_rate, chunk_ms)],
         )
         await mic.start()
         mic_metrics.recording_started_count += 1
-        while True:
+        chunk_count = max(1, int(round(1000 / chunk_ms)))
+        for _ in range(chunk_count):
             chunk = await mic.read_chunk()
             if not chunk:
                 break
@@ -567,7 +576,7 @@ async def run_scripted_demo(
             websocket,
             "client.session.start",
             None,
-            {"client_name": "interactive_demo_client", "mode": "scripted"},
+            {"client_name": "interactive_demo_client"},
         )
         first = await websocket.recv()
         if isinstance(first, bytes):
@@ -580,7 +589,7 @@ async def run_scripted_demo(
         receive_task = asyncio.create_task(receive_loop(websocket))
         try:
             for index, turn_id in enumerate(turn_ids):
-                await send_fake_turn(websocket, turn_id, reason="scripted_turn_end")
+                await send_fake_turn(websocket, turn_id, reason="client_end")
                 if index == 0 and scripted_turns > 1:
                     await asyncio.wait_for(first_playback_started.wait(), timeout=wait_timeout_sec)
                     if scripted_cancel_after_ms > 0:
