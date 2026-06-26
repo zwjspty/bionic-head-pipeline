@@ -15,9 +15,9 @@
 当前阶段名称：
 
 ```text
-可回归的本地交互式数字人 MVP
+可回归的本地交互式数字人 MVP + session 级短期多轮记忆
 —— 已经从“管线能跑且较快”
-进入“客户端可交互、可打断、可自动验收”
+进入“客户端可交互、可打断、可自动验收，并能在同一 WebSocket session 内记住前文”
 ```
 
 ## 当前能力状态
@@ -36,7 +36,7 @@
 | Playback interrupt validation | 已完成 | 可验证 playback.stop 后本地 stop/clear |
 | Interactive microphone client | 已完成 | 支持真实麦克风、按键录音、按键打断 |
 | Scripted interactive smoke | 已完成 | fake mic + null audio 可重复自动验收 |
-| 多轮对话记忆 | 未实现 | 每个 turn 仍独立问答 |
+| 多轮对话记忆 | 已完成 | 同一 WebSocket session 内成功 turn 会进入短期 history |
 | chunked / partial ASR | 未实现 | ASR 仍在端点后整段识别 |
 | 真实 UE5 | 未实现 | 当前只是 raw 52 维协议 |
 | Student FaceDriver | 未开始 | EmoTalk 仍是最终推理瓶颈 |
@@ -73,6 +73,7 @@ Task 12: local demo client                  ✅
 Task 13: playback interrupt validation      ✅
 Task 14: interactive mic client             ✅
 Task 15: scripted interactive smoke         ✅
+Task 16: session-level conversation history ✅
 ```
 
 当前已经具备：
@@ -99,6 +100,28 @@ old_generation_face_display_count: 0
 client_stale_audio_drop_count: 0
 client_stale_face_drop_count: 0
 terminal_event: server.pipeline.done
+```
+
+### 0.1 Session 级短期多轮记忆
+
+Task 16 已完成：
+
+```text
+同一 WebSocket session 内：
+成功完成的 turn -> append user + assistant
+下一轮 LLM -> 接收之前的 user/assistant history
+cancel / stale / error -> 不提交 assistant 回复
+history 自动按 max_turn_pairs / max_chars 裁剪
+timeline.json -> 记录 history_turn_count / history_char_count
+```
+
+当前边界：
+
+```text
+只做短期内存记忆
+不做跨 session 记忆
+不做数据库 / RAG / 向量库 / 用户画像
+/pipeline/audio 暂不共享跨请求 history
 ```
 
 ### 1. 模块边界清晰
