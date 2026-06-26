@@ -411,6 +411,7 @@ class StreamOrchestrator:
             )
             reply_parts: list[str] = []
             chunk_index = 0
+            history_snapshot = self.history.get(turn.session_id) if self.history is not None else []
             fallback_llm = LLMResult(
                 reply="",
                 emotion=self.settings.mock.emotion,
@@ -418,7 +419,7 @@ class StreamOrchestrator:
             )
 
             with timeline.stage("llm", self.registry.llm.name):
-                iterator = self.registry.llm.chat_stream(artifacts.asr.text, [], context)
+                iterator = self.registry.llm.chat_stream(artifacts.asr.text, history_snapshot, context)
                 while True:
                     if pending_llm_event is None:
                         pending_llm_event = asyncio.create_task(iterator.__anext__())
@@ -496,6 +497,13 @@ class StreamOrchestrator:
                 ue5=artifacts.ue5.model_dump(mode="json"),
                 commit_if_current=turn.commit_if_current,
             )
+            self._ensure_current(turn)
+            if self.history is not None:
+                self.history.append_pair(
+                    turn.session_id,
+                    user=artifacts.asr.text,
+                    assistant=artifacts.llm.reply,
+                )
             self._ensure_current(turn)
             if await turn.emit_terminal_once(EventType.SERVER_PIPELINE_DONE):
                 await emit_json(factory.server(EventType.SERVER_PIPELINE_DONE, turn.turn_id, {}))
