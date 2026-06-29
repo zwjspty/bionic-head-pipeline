@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
-import wave
 from pathlib import Path
+from types import SimpleNamespace
+import urllib.error
+import wave
+
+import pytest
 
 from bionic_head.client.demo_acceptance import (
     AcceptanceCheckResult,
@@ -11,6 +15,27 @@ from bionic_head.client.demo_acceptance import (
     write_demo_input_wav,
     write_json,
 )
+from bionic_head.client import demo_artifacts
+from bionic_head.client.demo_artifacts import (
+    collect_existing_artifacts,
+    collect_latest_artifacts,
+    http_get_json,
+)
+
+
+class FakeHTTPResponse:
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self.body = body
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
 
 
 def test_build_report_fails_when_required_check_fails() -> None:
@@ -101,3 +126,90 @@ def test_write_demo_input_wav_creates_16k_mono_pcm(tmp_path: Path) -> None:
     with wave.open(str(wav_path), "rb") as wav:
         assert wav.getframerate() == 8000
         assert wav.getnframes() == 4000
+
+
+def test_http_get_json_returns_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        demo_artifacts.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeHTTPResponse(b'{"status":"ok"}'),
+    )
+
+    ok, payload, error = http_get_json("http://127.0.0.1:8005/health")
+
+    assert ok is True
+    assert payload == {"status": "ok"}
+    assert error is None
+
+
+def test_http_get_json_handles_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_error(request, timeout):
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(demo_artifacts.urllib.request, "urlopen", raise_error)
+
+    ok, payload, error = http_get_json("http://127.0.0.1:8005/health")
+
+    assert ok is False
+    assert payload is None
+    assert "refused" in str(error)
+
+
+def test_collect_latest_artifacts_copies_local_latest(tmp_path: Path) -> None:
+    output_dir = tmp_path / "acceptance"
+    latest_dir = tmp_path / "latest"
+    latest_dir.mkdir()
+    (latest_dir / "latest_pipeline.json").write_text('{"ok": true}', encoding="utf-8")
+    (latest_dir / "latest_ue5_blendshape.json").write_text('{"frames": []}', encoding="utf-8")
+
+    artifacts = collect_latest_artifacts(
+        output_dir=output_dir,
+        http_base_url=None,
+        data_latest_dir=latest_dir,
+    )
+
+    assert artifacts == {
+        "latest_pipeline": "artifacts/latest_pipeline.json",
+        "latest_ue5": "artifacts/latest_ue5_blendshape.json",
+    }
+    assert (output_dir / "artifacts" / "latest_pipeline.json").exists()
+    assert (output_dir / "artifacts" / "latest_ue5_blendshape.json").exists()
+
+
+def test_collect_existing_artifacts_tracks_present_and_missing_files(tmp_path: Path) -> None:
+    output_dir = tmp_path / "acceptance"
+    output_dir.mkdir()
+    present = output_dir / "scripted" / "summary.json"
+    present.parent.mkdir()
+    present.write_text("{}", encoding="utf-8")
+    missing = output_dir / "history" / "events.jsonl"
+
+    artifacts = collect_existing_artifacts(
+        output_dir,
+        {
+            "scripted_summary": present,
+            "history_events": missing,
+        },
+    )
+
+    assert artifacts == {"scripted_summary": "scripted/summary.json"}
+
+
+def test_collect_demo_artifacts_parser_accepts_paths() -> None:
+    import scripts.collect_demo_artifacts as collect_script
+
+    parser = collect_script.build_parser()
+    args = parser.parse_args(
+        [
+            "--output-dir",
+            "/tmp/out",
+            "--http-base-url",
+            "http://127.0.0.1:8005",
+            "--data-latest-dir",
+            "data/latest",
+        ]
+    )
+
+    assert args.output_dir == Path("/tmp/out")
+    assert args.http_base_url == "http://127.0.0.1:8005"
+    assert args.data_latest_dir == Path("data/latest")
