@@ -133,8 +133,12 @@ async def _run_scripted_interactive_check(args: argparse.Namespace) -> Acceptanc
             ),
             metrics={key: report.get(key) for key in ("turn_count", "completed_turn_count", "cancelled_turn_count")},
         )
+    except asyncio.CancelledError:
+        raise
+    except SystemExit as exc:
+        return _exception_result("scripted_interactive_exception", exc)
     except Exception as exc:  # noqa: BLE001
-        return AcceptanceCheckResult(False, failure_code="scripted_interactive_exception", error_message=str(exc))
+        return _exception_result("scripted_interactive_exception", exc)
 
 
 async def _run_history_check(args: argparse.Namespace) -> AcceptanceCheckResult:
@@ -163,8 +167,12 @@ async def _run_history_check(args: argparse.Namespace) -> AcceptanceCheckResult:
                 },
             ),
         )
+    except asyncio.CancelledError:
+        raise
+    except SystemExit as exc:
+        return _exception_result("history_smoke_exception", exc)
     except Exception as exc:  # noqa: BLE001
-        return AcceptanceCheckResult(False, failure_code="history_smoke_exception", error_message=str(exc))
+        return _exception_result("history_smoke_exception", exc)
 
 
 async def _run_playback_interrupt_check(args: argparse.Namespace) -> AcceptanceCheckResult:
@@ -203,8 +211,12 @@ async def _run_playback_interrupt_check(args: argparse.Namespace) -> AcceptanceC
                 "client_interrupt_sent_ms": summary.get("client_interrupt_sent_ms"),
             },
         )
+    except asyncio.CancelledError:
+        raise
+    except SystemExit as exc:
+        return _exception_result("playback_interrupt_exception", exc)
     except Exception as exc:  # noqa: BLE001
-        return AcceptanceCheckResult(False, failure_code="playback_interrupt_exception", error_message=str(exc))
+        return _exception_result("playback_interrupt_exception", exc)
 
 
 async def _run_av_sync_check(args: argparse.Namespace, *, playback_sync: str) -> AcceptanceCheckResult:
@@ -253,8 +265,22 @@ async def _run_av_sync_check(args: argparse.Namespace, *, playback_sync: str) ->
                 "client_audio_wait_for_face_timeout": report.get("client_audio_wait_for_face_timeout"),
             },
         )
+    except asyncio.CancelledError:
+        raise
+    except SystemExit as exc:
+        return _exception_result(f"av_sync_{playback_sync}_exception", exc)
     except Exception as exc:  # noqa: BLE001
-        return AcceptanceCheckResult(False, failure_code=f"av_sync_{playback_sync}_exception", error_message=str(exc))
+        return _exception_result(f"av_sync_{playback_sync}_exception", exc)
+
+
+def _exception_result(failure_code: str, exc: BaseException) -> AcceptanceCheckResult:
+    message = str(exc)
+    return AcceptanceCheckResult(
+        success=False,
+        failure_code=failure_code,
+        failure_message=message,
+        error_message=message,
+    )
 
 
 def _read_json(path: Path) -> dict[str, object]:

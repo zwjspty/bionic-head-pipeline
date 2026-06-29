@@ -500,3 +500,125 @@ async def test_run_demo_acceptance_aggregates_fake_checks(monkeypatch: pytest.Mo
     }
     assert (tmp_path / "demo_acceptance_report.json").exists()
     assert report["checks"]["av_sync_wait_for_face"]["metrics"]["client_audio_wait_for_face_ms"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_run_demo_acceptance_writes_report_when_history_smoke_exits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scripts.run_demo_acceptance as runner
+
+    async def fake_check_server(http_base_url: str, *, timeout_sec: float):
+        return {"health_ok": True, "diagnostics_ok": True}
+
+    async def passing_check(args) -> AcceptanceCheckResult:
+        return AcceptanceCheckResult(success=True)
+
+    async def failing_history(**kwargs):
+        raise SystemExit("history smoke exited")
+
+    monkeypatch.setattr(runner, "_check_server", fake_check_server)
+    monkeypatch.setattr(runner, "_run_scripted_interactive_check", passing_check)
+    monkeypatch.setattr(runner, "_run_playback_interrupt_check", passing_check)
+    monkeypatch.setattr(runner, "_run_av_sync_check", lambda args, *, playback_sync: passing_check(args))
+    monkeypatch.setattr(runner.history_smoke, "run_history_smoke", failing_history)
+    monkeypatch.setattr(runner, "collect_latest_artifacts", lambda **kwargs: {})
+
+    args = argparse.Namespace(
+        url="ws://127.0.0.1:8005/pipeline/stream",
+        http_base_url="http://127.0.0.1:8005",
+        output_dir=tmp_path,
+        mode="fake",
+        audio_backend="null",
+        playback_sync=["immediate_audio"],
+        wait_for_face_timeout_ms=800,
+        history_turn1_wav=None,
+        history_turn2_wav=None,
+        expect="小张",
+        chunk_ms=40,
+        timeout_sec=30.0,
+        data_latest_dir=None,
+    )
+
+    report = await runner.run_demo_acceptance(args)
+
+    assert report["success"] is False
+    failed_check = report["checks"]["history_smoke"]
+    assert failed_check["success"] is False
+    assert failed_check["failure_code"] == "history_smoke_exception"
+    assert failed_check["failure_message"] == "history smoke exited"
+    assert (tmp_path / "demo_acceptance_report.json").exists()
+    assert "history_smoke:history_smoke_exception" in report["failure_reasons"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "history_turn1_wav", "history_turn2_wav", "expected_internal_mode"),
+    [
+        ("fake", None, None, "mock"),
+        ("real", Path("/tmp/turn1.wav"), Path("/tmp/turn2.wav"), "real"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_demo_acceptance_maps_history_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+    history_turn1_wav: Path | None,
+    history_turn2_wav: Path | None,
+    expected_internal_mode: str,
+) -> None:
+    import scripts.run_demo_acceptance as runner
+    from bionic_head.client.history_smoke import HistorySmokeReport
+
+    async def fake_check_server(http_base_url: str, *, timeout_sec: float):
+        return {"health_ok": True, "diagnostics_ok": True}
+
+    async def passing_check(args) -> AcceptanceCheckResult:
+        return AcceptanceCheckResult(success=True)
+
+    history_calls: list[dict[str, object]] = []
+
+    async def fake_history(**kwargs):
+        history_calls.append(kwargs)
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        report = HistorySmokeReport(
+            success=True,
+            mode=kwargs["mode"],
+            session_id="session-1",
+            expected_text=kwargs["expected_text"],
+            failure_reasons=[],
+            turns=[],
+        )
+        write_json(output_dir / "history_smoke_report.json", report.to_dict())
+        write_json(output_dir / "summary.json", {"success": True})
+        return report
+
+    monkeypatch.setattr(runner, "_check_server", fake_check_server)
+    monkeypatch.setattr(runner, "_run_scripted_interactive_check", passing_check)
+    monkeypatch.setattr(runner, "_run_playback_interrupt_check", passing_check)
+    monkeypatch.setattr(runner, "_run_av_sync_check", lambda args, *, playback_sync: passing_check(args))
+    monkeypatch.setattr(runner.history_smoke, "run_history_smoke", fake_history)
+    monkeypatch.setattr(runner, "collect_latest_artifacts", lambda **kwargs: {})
+
+    args = argparse.Namespace(
+        url="ws://127.0.0.1:8005/pipeline/stream",
+        http_base_url="http://127.0.0.1:8005",
+        output_dir=tmp_path,
+        mode=mode,
+        audio_backend="null",
+        playback_sync=["immediate_audio"],
+        wait_for_face_timeout_ms=800,
+        history_turn1_wav=history_turn1_wav,
+        history_turn2_wav=history_turn2_wav,
+        expect="小张",
+        chunk_ms=40,
+        timeout_sec=30.0,
+        data_latest_dir=None,
+    )
+
+    report = await runner.run_demo_acceptance(args)
+
+    assert report["success"] is True
+    assert history_calls
+    assert history_calls[0]["mode"] == expected_internal_mode
