@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import argparse
 from pathlib import Path
 import urllib.error
 import wave
@@ -351,6 +352,23 @@ def test_run_demo_acceptance_collects_health_diagnostics_artifacts_and_returns_d
         raise AssertionError(f"unexpected endpoint: {url}")
 
     monkeypatch.setattr(runner, "http_get_json", fake_http_get_json)
+    async def fake_scripted_check(args) -> AcceptanceCheckResult:
+        return AcceptanceCheckResult(success=True)
+
+    async def fake_history_check(args) -> AcceptanceCheckResult:
+        return AcceptanceCheckResult(success=True)
+
+    async def fake_playback_interrupt_check(args) -> AcceptanceCheckResult:
+        return AcceptanceCheckResult(success=True)
+
+    monkeypatch.setattr(runner, "_run_scripted_interactive_check", fake_scripted_check)
+    monkeypatch.setattr(runner, "_run_history_check", fake_history_check)
+    monkeypatch.setattr(runner, "_run_playback_interrupt_check", fake_playback_interrupt_check)
+
+    async def fake_av_sync_check(args, *, playback_sync: str) -> AcceptanceCheckResult:
+        return AcceptanceCheckResult(success=True, metrics={"playback_sync_strategy": playback_sync})
+
+    monkeypatch.setattr(runner, "_run_av_sync_check", fake_av_sync_check)
 
     collect_calls: dict[str, object] = {}
 
@@ -390,3 +408,95 @@ def test_run_demo_acceptance_collects_health_diagnostics_artifacts_and_returns_d
     assert report_path.exists()
     file_payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert file_payload == report
+
+
+@pytest.mark.asyncio
+async def test_run_demo_acceptance_aggregates_fake_checks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import scripts.run_demo_acceptance as runner
+
+    async def fake_check_server(http_base_url: str, *, timeout_sec: float):
+        return {"health_ok": True, "diagnostics_ok": True}
+
+    async def fake_scripted(**kwargs):
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            output_dir / "interaction_report.json",
+            {
+                "success": True,
+                "turn_count": kwargs.get("scripted_turns", 1),
+                "completed_turn_count": 1,
+                "cancelled_turn_count": 1 if kwargs.get("scripted_turns", 1) > 1 else 0,
+                "old_generation_audio_play_count": 0,
+                "old_generation_face_display_count": 0,
+                "playback_sync_strategy": kwargs.get("playback_sync", "immediate_audio"),
+                "client_audio_face_offset_ms": 0.5,
+                "client_audio_wait_for_face_ms": 10.0 if kwargs.get("playback_sync") == "wait_for_face" else 0.0,
+                "client_audio_wait_for_face_timeout": False,
+            },
+        )
+        write_json(output_dir / "summary.json", {"terminal_event": "server.pipeline.done"})
+        return "server.pipeline.done"
+
+    async def fake_history(**kwargs):
+        from bionic_head.client.history_smoke import HistorySmokeReport
+
+        report = HistorySmokeReport(
+            success=True,
+            mode=kwargs["mode"],
+            session_id="session-1",
+            expected_text=kwargs["expected_text"],
+            failure_reasons=[],
+            turns=[],
+        )
+        write_json(kwargs["output_dir"] / "history_smoke_report.json", report.to_dict())
+        write_json(kwargs["output_dir"] / "summary.json", {"success": True})
+        return report
+
+    async def fake_local(**kwargs):
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            output_dir / "summary.json",
+            {
+                "terminal_event": "server.turn.cancelled",
+                "playback_stop_count": 1,
+                "client_interrupt_sent_ms": 10.0,
+            },
+        )
+        return "server.turn.cancelled"
+
+    monkeypatch.setattr(runner, "_check_server", fake_check_server)
+    monkeypatch.setattr(runner.interactive_demo_client, "run_scripted_demo", fake_scripted)
+    monkeypatch.setattr(runner.history_smoke, "run_history_smoke", fake_history)
+    monkeypatch.setattr(runner.local_demo_client, "run_local_demo", fake_local)
+    monkeypatch.setattr(runner, "collect_latest_artifacts", lambda **kwargs: {})
+
+    args = argparse.Namespace(
+        url="ws://127.0.0.1:8005/pipeline/stream",
+        http_base_url="http://127.0.0.1:8005",
+        output_dir=tmp_path,
+        mode="fake",
+        audio_backend="null",
+        playback_sync=["immediate_audio", "wait_for_face"],
+        wait_for_face_timeout_ms=800,
+        history_turn1_wav=None,
+        history_turn2_wav=None,
+        expect="小张",
+        chunk_ms=40,
+        timeout_sec=30.0,
+        data_latest_dir=None,
+    )
+
+    report = await runner.run_demo_acceptance(args)
+
+    assert report["success"] is True
+    assert set(report["checks"]) == {
+        "scripted_interactive_smoke",
+        "history_smoke",
+        "playback_interrupt_smoke",
+        "av_sync_immediate_audio",
+        "av_sync_wait_for_face",
+    }
+    assert (tmp_path / "demo_acceptance_report.json").exists()
+    assert report["checks"]["av_sync_wait_for_face"]["metrics"]["client_audio_wait_for_face_ms"] == 10.0
