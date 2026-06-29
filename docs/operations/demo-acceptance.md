@@ -69,7 +69,7 @@ Inspect `failure_reasons` first when a run fails.
 
 Common failure mapping:
 
-- `server:server_health_unreachable` or `server:server_diagnostics_unreachable`: the API server is not healthy or `/diagnostics` is unreachable; verify the local server process, base URL, and those HTTP endpoints first.
+- `server:server_health_unreachable` or `server:server_diagnostics_failed`: the API server is not healthy or `/diagnostics` is unreachable; verify the local server process, base URL, and those HTTP endpoints first.
 - `history_smoke:*_exception` or other smoke-check exceptions: inspect the check's `failure_message` plus the corresponding `summary.json` / report artifact to find the thrown error quickly.
 - `playback_interrupt_smoke:playback_interrupt_failed`: the cancel path did not produce `server.turn.cancelled` or playback-stop evidence; inspect `playback_interrupt_smoke/summary.json` and `client_playback_metrics.json`.
 - `av_sync_*:av_sync_wait_for_face_timeout` or `av_sync_*:av_sync_offset_missing`: the wait-for-face path timed out or A/V sync metrics were not emitted; inspect `av_sync_*/interaction_report.json` and `summary.json`.
