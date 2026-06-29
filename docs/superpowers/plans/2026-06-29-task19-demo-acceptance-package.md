@@ -952,7 +952,7 @@ async def _run_scripted_interactive_check(args: argparse.Namespace) -> Acceptanc
             url=args.url,
             output_dir=output_dir,
             scripted_turns=2,
-            scripted_cancel_after_ms=300,
+            scripted_cancel_after_ms=0,  # immediate cancel so fast mock providers can still hit cancel path
             chunk_ms=args.chunk_ms,
             sample_rate=16000,
             audio_backend=args.audio_backend,
@@ -1025,7 +1025,7 @@ async def _run_playback_interrupt_check(args: argparse.Namespace) -> AcceptanceC
             output_dir=output_dir,
             chunk_ms=args.chunk_ms,
             play_audio=False,
-            cancel_after_ms=300,
+            cancel_after_ms=0,  # immediate cancel for fast mocks that may finish before delayed cancel
             playback_sync="immediate_audio",
             wait_for_face_timeout_ms=args.wait_for_face_timeout_ms,
         )

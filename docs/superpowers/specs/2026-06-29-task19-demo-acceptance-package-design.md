@@ -252,11 +252,13 @@ Run:
 ```text
 mode=scripted
 scripted_turns=2
-scripted_cancel_after_ms=300
+scripted_cancel_after_ms=0
 mic_backend=fake
 audio_backend=null
 playback_sync=immediate_audio
 ```
+
+`scripted_cancel_after_ms=0` is immediate cancel so a fast fake/mock provider can still produce a cancel path instead of completing before the delayed 300ms cancel would trigger.
 
 Pass when `interaction_report.json` has:
 
@@ -280,10 +282,12 @@ Pass when `history_smoke_report.json` has `success=true`.
 Generate a short local demo WAV under the output directory and run `scripts.local_demo_client.run_local_demo` with:
 
 ```text
-cancel_after_ms=300
+cancel_after_ms=0
 play_audio=false
 playback_sync=immediate_audio
 ```
+
+`cancel_after_ms=0` is immediate cancel to avoid race conditions where fast mock providers finish playback before a delayed cancel is sent.
 
 Pass when:
 
