@@ -266,3 +266,50 @@ def test_collect_demo_artifacts_parser_accepts_paths() -> None:
     assert args.output_dir == Path("/tmp/out")
     assert args.http_base_url == "http://127.0.0.1:8005"
     assert args.data_latest_dir == Path("data/latest")
+
+
+def test_run_demo_acceptance_parser_accepts_fake_mode() -> None:
+    import scripts.run_demo_acceptance as runner
+
+    parser = runner.build_parser()
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--http-base-url",
+            "http://127.0.0.1:8005",
+            "--output-dir",
+            "/tmp/acceptance",
+            "--mode",
+            "fake",
+            "--audio-backend",
+            "null",
+            "--playback-sync",
+            "immediate_audio",
+            "wait_for_face",
+        ]
+    )
+
+    assert args.mode == "fake"
+    assert args.playback_sync == ["immediate_audio", "wait_for_face"]
+
+
+def test_run_demo_acceptance_parser_rejects_real_without_history_wavs() -> None:
+    import scripts.run_demo_acceptance as runner
+
+    parser = runner.build_parser()
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--http-base-url",
+            "http://127.0.0.1:8005",
+            "--output-dir",
+            "/tmp/acceptance",
+            "--mode",
+            "real",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="real mode requires"):
+        runner.validate_args(args)
