@@ -2,6 +2,9 @@
 
 Use this flow to run a local playback demo against a running `pipeline/stream` server.
 
+For Task 18 audio/face synchronization options, see
+`docs/operations/client-audio-face-sync.md`.
+
 Start server (GPU EmoTalk example path in `BIONIC_CONFIG` as in Task 12.4 brief):
 
 ```bash
@@ -21,7 +24,8 @@ Run no-audio local demo (recommended for headless smoke, CI-like, or other autom
   --wav /tmp/bionic-demo-input.wav \
   --output-dir /tmp/bionic-local-demo \
   --chunk-ms 40 \
-  --no-play-audio
+  --no-play-audio \
+  --playback-sync immediate_audio
 ```
 
 Run with optional local playback (fresh install needs both `client` and `client-audio` extras):
@@ -78,6 +82,8 @@ Expected summary fields:
 - `client_stale_audio_drop_count` and `client_stale_face_drop_count` record stale old-generation drops.
 
 Note: `--play-audio` remains the default, but `--no-play-audio` is the preferred flag for headless smoke runs. If playback is enabled, `sounddevice` is optional at runtime and used only when `--play-audio` is set.
+
+Use `--playback-sync wait_for_face --wait-for-face-timeout-ms 800` when you want local TTS playback to wait for same-segment UE5 face frames before starting.
 
 ## Interactive microphone demo
 
