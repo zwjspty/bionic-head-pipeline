@@ -22,7 +22,12 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
+from bionic_head.client.playback_clock import PlaybackClock
+from bionic_head.client.segment_sync import PlaybackAction, SegmentSyncCoordinator
 from scripts.stream_client import client_event, pcm_chunks, read_pcm16_from_wav
 
 
@@ -336,6 +341,9 @@ class LocalDemoReceiver:
         clock: Callable[[], float] = perf_counter,
         terminal_types: set[str] | None = None,
         allow_turn_switch: bool = False,
+        playback_sync: str = "immediate_audio",
+        wait_for_face_timeout_ms: int = 800,
+        sync_clock: PlaybackClock | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.audio = audio
@@ -345,6 +353,12 @@ class LocalDemoReceiver:
         self._clock = clock
         self._started_at = clock()
         self._metrics = audio.metrics
+        self.sync_clock = sync_clock or PlaybackClock(clock=clock)
+        self._sync = SegmentSyncCoordinator(
+            strategy=playback_sync,
+            clock=self.sync_clock,
+            wait_for_face_timeout_ms=wait_for_face_timeout_ms,
+        )
         self._terminal_types = terminal_types or TERMINAL_TYPES
         self._allow_turn_switch = allow_turn_switch
         self.next_sequence = 1
@@ -365,9 +379,15 @@ class LocalDemoReceiver:
             "stale_drop_count": 0,
             "stale_face_drop_count": 0,
             "old_turn_face_leak_count": 0,
+            "playback_sync_strategy": playback_sync,
+            "wait_for_face_timeout_ms": wait_for_face_timeout_ms,
         }
         (self.output_dir / "tts").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "ue5").mkdir(parents=True, exist_ok=True)
+
+    @property
+    def sync_pending_count(self) -> int:
+        return self._sync.pending_count
 
     def accept_json(self, envelope: dict[str, object]) -> None:
         self._validate_envelope(envelope)
@@ -398,6 +418,7 @@ class LocalDemoReceiver:
             return
 
         self._record_generation_epoch(event_epoch)
+        self._sync.update_latest_generation(event_epoch)
         if event_type == "server.tts.audio":
             self._accept_tts_metadata(payload)
             return
@@ -406,11 +427,13 @@ class LocalDemoReceiver:
             return
         if event_type == "server.playback.stop":
             self._metrics.mark_playback_stop_received()
+            self.sync_clock.mark_playback_stop_received()
             self._clear_pending_playback()
             self.summary["playback_stop_count"] = int(self.summary["playback_stop_count"]) + 1
             return
         if event_type == "server.turn.cancelled":
             self._metrics.mark_playback_stop_received()
+            self.sync_clock.mark_playback_stop_received()
             self._clear_pending_playback()
             if event_type in self._terminal_types:
                 self._mark_terminal(event_type, received_ms)
@@ -430,12 +453,25 @@ class LocalDemoReceiver:
         self._validate_tts_binary(payload, byte_length=pending.byte_length, format_name=pending.format)
 
         (self.output_dir / "tts" / f"{pending.chunk_id}.wav").write_bytes(payload)
-        self.audio.enqueue_wav(pending.chunk_id, payload, generation_epoch=pending.generation_epoch)
+        actions = self._sync.accept_tts(
+            segment_id=pending.segment_id,
+            chunk_id=pending.chunk_id,
+            wav_bytes=payload,
+            generation_epoch=pending.generation_epoch,
+        )
+        self._handle_playback_actions(actions)
         self.summary["tts_chunks"] = int(self.summary["tts_chunks"]) + 1
         self.pending_tts = None
 
+    def flush_sync_timeouts(self) -> None:
+        self._handle_playback_actions(self._sync.flush_timeouts(now_ms=self._elapsed_ms()))
+
     def finish(self) -> None:
-        metrics = self._metrics.to_dict()
+        metrics = {
+            **self._metrics.to_dict(),
+            **self.sync_clock.metrics(),
+            "playback_segments": self.sync_clock.segment_metrics(),
+        }
         summary = {**self.summary, **metrics}
         (self.output_dir / "client_playback_metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2),
@@ -505,16 +541,49 @@ class LocalDemoReceiver:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        self.face.enqueue_frames(chunk_id, payload, generation_epoch=generation_epoch)
+        actions = self._sync.accept_face(
+            segment_id=segment_id,
+            chunk_id=chunk_id,
+            payload=payload,
+            generation_epoch=generation_epoch,
+        )
+        self._handle_playback_actions(actions)
         self.next_ue5_frame_index_by_segment[segment_id] = start + frame_count
         self.summary["ue5_chunks"] = int(self.summary["ue5_chunks"]) + 1
 
     def _clear_pending_playback(self) -> None:
         self.pending_tts = None
+        self._sync.clear(reason="playback_stop")
         self.audio.stop()
         self.audio.clear()
         self.face.clear()
+        self.sync_clock.mark_audio_stopped()
+        self.sync_clock.mark_face_cleared()
         self.next_ue5_frame_index_by_segment.clear()
+
+    def _handle_playback_actions(self, actions: list[PlaybackAction]) -> None:
+        for action in actions:
+            if action.kind == "play_audio":
+                if action.wav_bytes is None:
+                    raise ProtocolError("play_audio action missing wav bytes")
+                self.sync_clock.mark_audio_play_start(action.segment_id)
+                self.audio.enqueue_wav(
+                    action.chunk_id,
+                    action.wav_bytes,
+                    generation_epoch=action.generation_epoch,
+                )
+                continue
+            if action.kind == "display_face":
+                if action.face_payload is None:
+                    raise ProtocolError("display_face action missing face payload")
+                self.sync_clock.mark_face_display(action.segment_id)
+                self.face.enqueue_frames(
+                    action.chunk_id,
+                    action.face_payload,
+                    generation_epoch=action.generation_epoch,
+                )
+                continue
+            raise ProtocolError(f"unknown playback action: {action.kind}")
 
     def _require_tts_byte_length(self, payload: dict[str, object]) -> int:
         byte_length = payload.get("byte_length")
@@ -589,6 +658,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-ms", type=int, default=40)
     parser.add_argument("--cancel-after-ms", type=int)
     parser.add_argument(
+        "--playback-sync",
+        choices=["immediate_audio", "wait_for_face"],
+        default="immediate_audio",
+        help="Client-side audio/face synchronization strategy.",
+    )
+    parser.add_argument(
+        "--wait-for-face-timeout-ms",
+        type=int,
+        default=800,
+        help="Fallback delay before playing audio when wait_for_face has not received matching UE5 frames.",
+    )
+    parser.add_argument(
         "--play-audio",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -603,6 +684,8 @@ async def run_local_demo(
     chunk_ms: int,
     play_audio: bool,
     cancel_after_ms: int | None = None,
+    playback_sync: str = "immediate_audio",
+    wait_for_face_timeout_ms: int = 800,
 ) -> str:
     try:
         import websockets
@@ -653,6 +736,8 @@ async def run_local_demo(
         FacePlaybackEngine(metrics),
         session_id=session_id,
         turn_id=turn_id,
+        playback_sync=playback_sync,
+        wait_for_face_timeout_ms=wait_for_face_timeout_ms,
     )
 
     async with websockets.connect(url) as websocket:
@@ -729,6 +814,7 @@ async def run_local_demo(
                 receiver.accept_binary(message)
             else:
                 receiver.accept_json(json.loads(message))
+            receiver.flush_sync_timeouts()
             if cancel_task is not None and not cancel_task.done():
                 await asyncio.sleep(0)
 
@@ -750,6 +836,8 @@ def main() -> None:
             chunk_ms=args.chunk_ms,
             play_audio=args.play_audio,
             cancel_after_ms=args.cancel_after_ms,
+            playback_sync=args.playback_sync,
+            wait_for_face_timeout_ms=args.wait_for_face_timeout_ms,
         )
     )
     print(

@@ -73,11 +73,11 @@ class SegmentSyncCoordinator:
             self.stale_audio_drop_count += 1
             return []
         self.update_latest_generation(generation_epoch)
-        self.clock.mark_tts_received(segment_id)
+        tts_received_ms = self.clock.mark_tts_received(segment_id)
         segment = self._segment(segment_id, generation_epoch)
         segment.tts_chunk_id = chunk_id
         segment.wav_bytes = wav_bytes
-        segment.tts_received_ms = self.clock.segment_metrics()[segment_id]["tts_received_ms"]  # type: ignore[assignment]
+        segment.tts_received_ms = tts_received_ms
         return self._release_ready(segment)
 
     def accept_face(
@@ -169,8 +169,7 @@ class SegmentSyncCoordinator:
     def _drop_completed_segments(self) -> None:
         for segment_id, segment in list(self._segments.items()):
             if (
-                segment.audio_released
-                and segment.wav_bytes is not None
+                (segment.audio_released or segment.wav_bytes is None)
                 and segment.face_released_count >= len(segment.face_chunks)
             ):
                 del self._segments[segment_id]
