@@ -159,7 +159,8 @@ The report is a plain JSON object:
   "checks": {
     "scripted_interactive_smoke": {
       "success": true,
-      "failure_reasons": [],
+      "failure_code": null,
+      "failure_message": null,
       "artifacts": {}
     }
   },
@@ -171,7 +172,8 @@ The report is a plain JSON object:
 Every check has:
 
 - `success: bool`
-- `failure_reasons: list[str]`
+- `failure_code: str | null`
+- `failure_message: str | null`
 - `artifacts: dict[str, str]`
 
 Failure reason examples:
@@ -358,7 +360,8 @@ Each check should catch exceptions and convert them to:
 ```json
 {
   "success": false,
-  "failure_reasons": ["history_smoke_exception"],
+  "failure_code": "history_smoke_exception",
+  "failure_message": "...",
   "error_message": "...",
   "artifacts": {}
 }
