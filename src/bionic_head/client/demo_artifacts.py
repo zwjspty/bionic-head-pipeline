@@ -43,15 +43,21 @@ def collect_latest_artifacts(
                 artifacts[name] = destination.relative_to(output_dir).as_posix()
 
     if http_base_url:
-        endpoints = {
-            "latest_pipeline_http": "/pipeline/latest",
-            "latest_ue5_http": "/ue5/latest",
+        http_sources = {
+            "latest_pipeline": {
+                "path": "/pipeline/latest",
+                "destination": artifact_dir / "latest_pipeline.json",
+            },
+            "latest_ue5": {
+                "path": "/ue5/latest",
+                "destination": artifact_dir / "latest_ue5_blendshape.json",
+            },
         }
-        for name, path in endpoints.items():
-            ok, payload, _ = http_get_json(http_base_url.rstrip("/") + path, timeout_sec=timeout_sec)
+        for name, config in http_sources.items():
+            ok, payload, _ = http_get_json(http_base_url.rstrip("/") + config["path"], timeout_sec=timeout_sec)
             if ok and payload is not None:
-                destination = artifact_dir / f"{name}.json"
-                write_json(destination, {"payload": payload})
+                destination = config["destination"]
+                write_json(destination, payload)
                 artifacts[name] = destination.relative_to(output_dir).as_posix()
     return artifacts
 

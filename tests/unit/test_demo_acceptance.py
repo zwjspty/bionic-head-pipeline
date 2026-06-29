@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 import urllib.error
 import wave
 
@@ -155,6 +154,33 @@ def test_http_get_json_handles_unreachable(monkeypatch: pytest.MonkeyPatch) -> N
     assert "refused" in str(error)
 
 
+def test_http_get_json_returns_false_none_on_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        demo_artifacts.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeHTTPResponse(b"not-json"),
+    )
+
+    ok, payload, error = http_get_json("http://127.0.0.1:8005/health")
+
+    assert ok is False
+    assert payload is None
+    assert error is not None
+
+
+def test_http_get_json_returns_false_none_on_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_error(request, timeout):
+        raise OSError("filesystem unavailable")
+
+    monkeypatch.setattr(demo_artifacts.urllib.request, "urlopen", raise_error)
+
+    ok, payload, error = http_get_json("http://127.0.0.1:8005/health")
+
+    assert ok is False
+    assert payload is None
+    assert error is not None
+
+
 def test_collect_latest_artifacts_copies_local_latest(tmp_path: Path) -> None:
     output_dir = tmp_path / "acceptance"
     latest_dir = tmp_path / "latest"
@@ -174,6 +200,33 @@ def test_collect_latest_artifacts_copies_local_latest(tmp_path: Path) -> None:
     }
     assert (output_dir / "artifacts" / "latest_pipeline.json").exists()
     assert (output_dir / "artifacts" / "latest_ue5_blendshape.json").exists()
+
+
+def test_collect_latest_artifacts_collects_http_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output_dir = tmp_path / "acceptance"
+
+    def fake_urlopen(request, timeout):
+        assert isinstance(request.full_url, str)
+        if request.full_url.endswith("/pipeline/latest"):
+            return FakeHTTPResponse(json.dumps({"pipeline": "ok"}).encode("utf-8"))
+        if request.full_url.endswith("/ue5/latest"):
+            return FakeHTTPResponse(json.dumps({"frames": []}).encode("utf-8"))
+        raise AssertionError(f"unexpected url: {request.full_url}")
+
+    monkeypatch.setattr(demo_artifacts.urllib.request, "urlopen", fake_urlopen)
+
+    artifacts = collect_latest_artifacts(
+        output_dir=output_dir,
+        http_base_url="http://127.0.0.1:8005",
+        data_latest_dir=None,
+    )
+
+    assert artifacts == {
+        "latest_pipeline": "artifacts/latest_pipeline.json",
+        "latest_ue5": "artifacts/latest_ue5_blendshape.json",
+    }
+    assert json.loads((output_dir / "artifacts" / "latest_pipeline.json").read_text(encoding="utf-8")) == {"pipeline": "ok"}
+    assert json.loads((output_dir / "artifacts" / "latest_ue5_blendshape.json").read_text(encoding="utf-8")) == {"frames": []}
 
 
 def test_collect_existing_artifacts_tracks_present_and_missing_files(tmp_path: Path) -> None:
