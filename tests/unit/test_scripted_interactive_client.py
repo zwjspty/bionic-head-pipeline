@@ -79,7 +79,7 @@ class ScriptedFakeWebSocket:
                     sequence=self._next_sequence(),
                     turn_id=TURN_1_ID,
                     generation_epoch=0,
-                    chunk_id="turn1-face",
+                    chunk_id="turn1-chunk",
                 )
             if self._stage == "wait_cancel" and "client.turn.cancel" in sent_types:
                 self._stage = "turn1_cancelled"
@@ -115,7 +115,7 @@ class ScriptedFakeWebSocket:
                     sequence=self._next_sequence(),
                     turn_id=TURN_2_ID,
                     generation_epoch=1,
-                    chunk_id="turn2-face",
+                    chunk_id="turn2-chunk",
                 )
             if self._stage == "done":
                 self._stage = "exhausted"
@@ -268,3 +268,38 @@ async def test_scripted_mode_runs_two_fake_turns_and_writes_report(monkeypatch, 
     assert report["client_interrupt_to_audio_stop_ms"] is not None
     assert summary["tts_chunks"] == 2
     assert summary["ue5_chunks"] == 2
+
+
+@pytest.mark.asyncio
+async def test_scripted_mode_supports_wait_for_face_sync(monkeypatch, tmp_path) -> None:
+    websocket = ScriptedFakeWebSocket()
+    ids = iter([SESSION_ID, TURN_1_ID, TURN_2_ID])
+
+    monkeypatch.setattr(interactive, "uuid4", lambda: next(ids))
+    monkeypatch.setitem(
+        sys.modules,
+        "websockets",
+        SimpleNamespace(connect=lambda url: FakeConnect(websocket)),
+    )
+
+    terminal = await interactive.run_scripted_demo(
+        url="ws://127.0.0.1:8005/pipeline/stream",
+        output_dir=tmp_path,
+        scripted_turns=2,
+        scripted_cancel_after_ms=0,
+        chunk_ms=40,
+        sample_rate=16000,
+        audio_backend="null",
+        playback_sync="wait_for_face",
+        wait_for_face_timeout_ms=800,
+    )
+
+    report = json.loads((tmp_path / "interaction_report.json").read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+
+    assert terminal == "server.pipeline.done"
+    assert summary["playback_sync_strategy"] == "wait_for_face"
+    assert summary["client_audio_wait_for_face_ms"] is not None
+    assert abs(summary["client_audio_face_offset_ms"]) < 1.0
+    assert report["success"] is True
+    assert report["playback_sync_strategy"] == "wait_for_face"

@@ -208,6 +208,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-ms", type=int, default=40, help="Microphone PCM chunk duration in milliseconds")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Microphone sample rate; default is 16 kHz")
     parser.add_argument(
+        "--playback-sync",
+        choices=["immediate_audio", "wait_for_face"],
+        default="immediate_audio",
+        help="Client-side audio/face synchronization strategy.",
+    )
+    parser.add_argument(
+        "--wait-for-face-timeout-ms",
+        type=int,
+        default=800,
+        help="Fallback delay before playing audio when wait_for_face has not received matching UE5 frames.",
+    )
+    parser.add_argument(
         "--mic-backend",
         choices=["sounddevice", "fake"],
         default=None,
@@ -363,6 +375,7 @@ class InteractiveDemoSession:
                     self.receiver.accept_binary(message)
                 else:
                     self.receiver.accept_json(json.loads(message))
+                self.receiver.flush_sync_timeouts()
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001
@@ -401,6 +414,8 @@ async def run_interactive_demo(
     chunk_ms: int,
     sample_rate: int,
     clock: Callable[[], float] = perf_counter,
+    playback_sync: str = "immediate_audio",
+    wait_for_face_timeout_ms: int = 800,
 ) -> str:
     try:
         import websockets
@@ -419,6 +434,8 @@ async def run_interactive_demo(
         session_id=session_id,
         turn_id=turn_id,
         clock=clock,
+        playback_sync=playback_sync,
+        wait_for_face_timeout_ms=wait_for_face_timeout_ms,
     )
     sequence = 1
 
@@ -468,6 +485,8 @@ async def run_scripted_demo(
     audio_backend: str,
     clock: Callable[[], float] = perf_counter,
     wait_timeout_sec: float = 5.0,
+    playback_sync: str = "immediate_audio",
+    wait_for_face_timeout_ms: int = 800,
 ) -> str:
     try:
         import websockets
@@ -494,6 +513,8 @@ async def run_scripted_demo(
         clock=clock,
         terminal_types={"server.pipeline.done", "server.pipeline.error"},
         allow_turn_switch=True,
+        playback_sync=playback_sync,
+        wait_for_face_timeout_ms=wait_for_face_timeout_ms,
     )
     mic_metrics = MicMetrics()
     sequence = 1
@@ -531,6 +552,7 @@ async def run_scripted_demo(
                     receiver.accept_binary(message)
                 else:
                     receiver.accept_json(json.loads(message))
+                receiver.flush_sync_timeouts()
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001
@@ -621,8 +643,13 @@ async def run_scripted_demo(
 
     receiver.summary.update(mic_metrics.to_summary())
     receiver.finish()
+    report_summary = {
+        **receiver.summary,
+        **metrics.to_dict(),
+        **receiver.sync_clock.metrics(),
+    }
     report = build_interaction_report(
-        {**receiver.summary, **metrics.to_dict()},
+        report_summary,
         mode="scripted",
         turn_count=scripted_turns,
         completed_turn_count=1 if receiver.terminal_event == "server.pipeline.done" else 0,
@@ -658,6 +685,8 @@ def main() -> None:
                 chunk_ms=args.chunk_ms,
                 sample_rate=args.sample_rate,
                 audio_backend=audio_backend,
+                playback_sync=args.playback_sync,
+                wait_for_face_timeout_ms=args.wait_for_face_timeout_ms,
             )
         )
     else:
@@ -676,6 +705,8 @@ def main() -> None:
                 audio_backend=audio_backend,
                 chunk_ms=args.chunk_ms,
                 sample_rate=args.sample_rate,
+                playback_sync=args.playback_sync,
+                wait_for_face_timeout_ms=args.wait_for_face_timeout_ms,
             )
         )
     print(

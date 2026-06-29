@@ -63,6 +63,15 @@ def build_interaction_report(
         "client_interrupt_to_playback_stop_ms",
         "client_interrupt_to_audio_stop_ms",
         "client_interrupt_to_face_clear_ms",
+        "playback_sync_strategy",
+        "client_audio_play_start_ms",
+        "client_face_first_frame_displayed_ms",
+        "client_audio_face_offset_ms",
+        "client_audio_wait_for_face_ms",
+        "client_face_late_by_ms",
+        "client_audio_wait_for_face_timeout",
+        "client_playback_stop_to_audio_stop_ms",
+        "client_playback_stop_to_face_clear_ms",
     ]:
         report[key] = summary.get(key)
     return report

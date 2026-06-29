@@ -11,6 +11,9 @@ It has two modes:
 - `interactive`: human terminal control with microphone input;
 - `scripted`: repeatable fake-mic smoke for local acceptance.
 
+For Task 18 client-side audio/face synchronization options, see
+`docs/operations/client-audio-face-sync.md`.
+
 ## Start a stream server first
 
 Example:
@@ -40,7 +43,8 @@ This is the preferred Task 15 automated acceptance command. It does not require 
   --mic-backend fake \
   --audio-backend null \
   --chunk-ms 40 \
-  --no-play-audio
+  --no-play-audio \
+  --playback-sync immediate_audio
 ```
 
 Expected behavior:
@@ -76,6 +80,14 @@ playback_stop_count: >= 1
 old_generation_audio_play_count: 0
 old_generation_face_display_count: 0
 ```
+
+To validate synchronized playback, rerun the same smoke with:
+
+```bash
+--playback-sync wait_for_face --wait-for-face-timeout-ms 800
+```
+
+Then check `client_audio_face_offset_ms`, `client_audio_wait_for_face_ms`, and `client_audio_wait_for_face_timeout` in `summary.json` or `interaction_report.json`.
 
 With Task 16 enabled, the same command also exercises the normal multi-turn WebSocket session path while keeping the first-turn cancel behavior. The client-side report does not inspect server-internal LLM prompts; session history is verified on the server side through stream tests and `timeline.json` history metrics.
 

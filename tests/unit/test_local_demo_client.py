@@ -141,6 +141,39 @@ def test_build_parser_accepts_cancel_after_ms() -> None:
     assert args.cancel_after_ms == 500
 
 
+def test_build_parser_accepts_playback_sync_strategy() -> None:
+    parser = build_parser()
+
+    default_args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--wav",
+            "/tmp/input.wav",
+            "--output-dir",
+            "/tmp/out",
+        ]
+    )
+    wait_args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--wav",
+            "/tmp/input.wav",
+            "--output-dir",
+            "/tmp/out",
+            "--playback-sync",
+            "wait_for_face",
+            "--wait-for-face-timeout-ms",
+            "700",
+        ]
+    )
+
+    assert default_args.playback_sync == "immediate_audio"
+    assert wait_args.playback_sync == "wait_for_face"
+    assert wait_args.wait_for_face_timeout_ms == 700
+
+
 def test_build_parser_defaults_to_audio_playback() -> None:
     parser = build_parser()
 
@@ -592,6 +625,91 @@ def test_receiver_accepts_tts_metadata_then_binary(tmp_path, server_envelope) ->
     assert audio.queued_count == 1
 
 
+def test_receiver_wait_for_face_holds_audio_until_matching_ue5(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    sink = MemoryAudioSink()
+    audio = AudioPlaybackEngine(metrics, sink=sink)
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face, playback_sync="wait_for_face")
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+                "generation_epoch": 0,
+            },
+            generation_epoch=0,
+        )
+    )
+    receiver.accept_binary(b"RIFF....WAVE")
+
+    assert sink.played_chunks == []
+    assert audio.queued_count == 0
+
+    receiver.accept_json(
+        server_envelope(
+            "server.ue5.frames",
+            payload={
+                "chunk_id": "segment-1-0000",
+                "segment_id": "segment-1",
+                "start_frame_index": 0,
+                "frame_count": 1,
+                "frames": [{"frame_index": 0}],
+                "generation_epoch": 0,
+            },
+            generation_epoch=0,
+        )
+    )
+
+    assert sink.played_chunks == [b"RIFF....WAVE"]
+    assert audio.queued_count == 1
+    assert face.buffered_chunk_count == 1
+
+
+def test_receiver_wait_for_face_timeout_releases_audio(tmp_path, server_envelope) -> None:
+    fake_clock = FakeClock()
+    metrics = PlaybackMetrics(clock=fake_clock)
+    sink = MemoryAudioSink()
+    audio = AudioPlaybackEngine(metrics, sink=sink)
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(
+        tmp_path,
+        audio,
+        face,
+        clock=fake_clock,
+        playback_sync="wait_for_face",
+        wait_for_face_timeout_ms=800,
+    )
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+                "generation_epoch": 0,
+            },
+            generation_epoch=0,
+        )
+    )
+    receiver.accept_binary(b"RIFF....WAVE")
+    fake_clock.advance(0.801)
+
+    receiver.flush_sync_timeouts()
+
+    assert sink.played_chunks == [b"RIFF....WAVE"]
+    receiver.finish()
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["playback_sync_strategy"] == "wait_for_face"
+    assert summary["client_audio_wait_for_face_timeout"] is True
+
+
 def test_receiver_rejects_binary_length_mismatch(tmp_path, server_envelope) -> None:
     metrics = PlaybackMetrics(clock=lambda: 0.0)
     audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
@@ -657,6 +775,29 @@ def test_receiver_playback_stop_clears_pending_tts_binary(tmp_path, server_envel
     assert receiver.pending_tts is None
     assert not (tmp_path / "tts" / "chunk-1.wav").exists()
     assert audio.queued_count == 0
+
+
+def test_receiver_playback_stop_clears_pending_sync(tmp_path, server_envelope) -> None:
+    metrics = PlaybackMetrics(clock=lambda: 0.0)
+    audio = AudioPlaybackEngine(metrics, sink=MemoryAudioSink())
+    face = FacePlaybackEngine(metrics)
+    receiver = LocalDemoReceiver(tmp_path, audio, face, playback_sync="wait_for_face")
+
+    receiver.accept_json(
+        server_envelope(
+            "server.tts.audio",
+            payload={
+                "chunk_id": "chunk-1",
+                "segment_id": "segment-1",
+                "format": "wav",
+                "byte_length": 12,
+            },
+        )
+    )
+    receiver.accept_binary(b"RIFF....WAVE")
+    receiver.accept_json(server_envelope("server.playback.stop", payload={}, generation_epoch=1))
+
+    assert receiver.sync_pending_count == 0
 
 
 def test_receiver_turn_cancelled_clears_pending_tts_binary(tmp_path, server_envelope) -> None:
