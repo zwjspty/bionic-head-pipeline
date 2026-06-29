@@ -254,6 +254,15 @@ class _StreamTiming:
         self.history_turn_count_after = metrics.turn_count
         self.history_char_count_after = metrics.char_count
 
+    def history_payload(self) -> dict[str, object]:
+        return {
+            "history_enabled": self.history_enabled,
+            "history_turn_count_before": self.history_turn_count_before,
+            "history_char_count_before": self.history_char_count_before,
+            "history_turn_count_after": self.history_turn_count_after,
+            "history_char_count_after": self.history_char_count_after,
+        }
+
     def snapshot(self) -> dict[str, object]:
         return {
             "segments": [
@@ -262,11 +271,7 @@ class _StreamTiming:
             ],
             "old_turn_face_leak_count": self.old_turn_face_leak_count,
             "stale_face_drop_count": self.stale_face_drop_count,
-            "history_enabled": self.history_enabled,
-            "history_turn_count_before": self.history_turn_count_before,
-            "history_char_count_before": self.history_char_count_before,
-            "history_turn_count_after": self.history_turn_count_after,
-            "history_char_count_after": self.history_char_count_after,
+            **self.history_payload(),
         }
 
 
@@ -531,7 +536,13 @@ class StreamOrchestrator:
                 stream_timing.record_history_after(self.history.metrics(turn.session_id))
             self._ensure_current(turn)
             if await turn.emit_terminal_once(EventType.SERVER_PIPELINE_DONE):
-                await emit_json(factory.server(EventType.SERVER_PIPELINE_DONE, turn.turn_id, {}))
+                await emit_json(
+                    factory.server(
+                        EventType.SERVER_PIPELINE_DONE,
+                        turn.turn_id,
+                        stream_timing.history_payload(),
+                    )
+                )
         except asyncio.CancelledError:
             mark_once("cancelled")
             if await turn.emit_terminal_once(EventType.SERVER_TURN_CANCELLED):

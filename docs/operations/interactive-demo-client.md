@@ -98,6 +98,33 @@ same WebSocket session
 -> cancelled / stale / error turns do not append assistant replies
 ```
 
+## Task 16.5 history smoke
+
+The history smoke verifies that two turns in the same WebSocket session can share short-term conversation history.
+
+Real provider acceptance:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/history_smoke.py \
+  --url ws://127.0.0.1:8005/pipeline/stream \
+  --output-dir /tmp/bionic-history-smoke-real \
+  --mode real \
+  --turn1-wav /path/to/wo-jiao-xiaozhang.wav \
+  --turn2-wav /path/to/wo-jiao-shenme.wav \
+  --expect 小张
+```
+
+Expected report:
+
+```text
+history_smoke_report.json
+success: true
+turn 2 history_turn_count_before > 0
+turn 2 llm_reply contains 小张
+```
+
+If the real smoke fails, inspect `asr_text` first. A wrong ASR transcript means the audio sample or ASR provider failed before history can be judged.
+
 ## Real interactive microphone mode
 
 Install optional audio dependencies:
