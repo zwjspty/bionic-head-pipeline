@@ -287,3 +287,40 @@ def test_stream_metrics_from_summary_counts_eye_continuity_metrics_across_segmen
     assert metrics["blink_applied_count"] == 1.0
     assert metrics["blink_frame_count"] == 3.0
     assert metrics["blink_reset_count"] == 1.0
+
+
+def test_stream_metrics_from_summary_extracts_expression_metrics() -> None:
+    metrics = stream_metrics_from_summary(
+        {
+            "segments": {
+                "chunk-0001": {
+                    "tts_audio_event_ms": 100.0,
+                    "expression_enabled": True,
+                    "expression_applied": True,
+                    "expression_emotion": "happy",
+                    "expression_intensity": 0.8,
+                    "expression_profile_channel_count": 2.0,
+                    "expression_max_delta": 0.16,
+                    "expression_warning_count": 1.0,
+                },
+                "chunk-0002": {
+                    "tts_audio_event_ms": 200.0,
+                    "expression_enabled": True,
+                    "expression_applied": False,
+                    "expression_emotion": "friendly",
+                    "expression_intensity": 0.5,
+                    "expression_profile_channel_count": 0.0,
+                    "expression_max_delta": 0.0,
+                    "expression_warning_count": 2.0,
+                },
+            }
+        },
+        wall_ms=1000.0,
+    )
+
+    assert metrics["expression_enabled"] == 1.0
+    assert metrics["expression_applied_count"] == 1.0
+    assert metrics["expression_intensity"] == 0.8
+    assert metrics["expression_profile_channel_count"] == 2.0
+    assert metrics["expression_max_delta"] == 0.16
+    assert metrics["expression_warning_count"] == 3.0

@@ -1,0 +1,39 @@
+{
+  "format": "morpheus_52_raw",
+  "channel_count": 52,
+  "verified": true,
+  "verification_status": "partial",
+  "channels": {
+    "jaw_open": 24,
+    "mouth_smile_left": 43,
+    "mouth_smile_right": 44,
+    "mouth_frown_left": 47,
+    "mouth_frown_right": 48,
+    "mouth_pucker": 31,
+    "mouth_funnel": 37,
+    "mouth_press": 39,
+    "eye_blink_left": null,
+    "eye_blink_right": null,
+    "brow_up_left": null,
+    "brow_up_right": null,
+    "brow_down_left": 0,
+    "brow_down_right": 1,
+    "cheek_raise_left": null,
+    "cheek_raise_right": null
+  },
+  "groups": {
+    "mouth": [24, 26, 31, 32, 37, 38, 39, 40, 43, 44, 47, 48],
+    "jaw": [24],
+    "eyes": [3, 8, 14, 20, 22],
+    "brows": [0, 1, 2, 3, 4, 8, 14, 20],
+    "cheeks": []
+  },
+  "notes": {
+    "source": "manual probe using scripts/probe_face_channels.py",
+    "rendered_probe_dir": "/tmp/bionic-channel-videos",
+    "observation_doc": "docs/operations/face-channel-mapping.md",
+    "do_not_use_unlisted_channels_for_expression": true,
+    "left_right_convention": "subject anatomical left/right inferred from frontal grey-head render; re-check before production use",
+    "unverified_fields": ["eye_blink_left", "eye_blink_right", "brow_up_left", "brow_up_right", "cheek_raise_left", "cheek_raise_right"]
+  }
+}

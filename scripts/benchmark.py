@@ -119,6 +119,9 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
             "eye_continuity_actual_overlap_frames",
             "eye_boundary_delta_before",
             "eye_boundary_delta_after",
+            "expression_intensity",
+            "expression_profile_channel_count",
+            "expression_max_delta",
         ):
             value = _float_or_none(first_segment.get(key))
             if value is not None:
@@ -129,6 +132,9 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
         blink_enabled = _bool_or_none(first_segment.get("blink_enabled"))
         if blink_enabled is not None:
             metrics["blink_enabled"] = 1.0 if blink_enabled else 0.0
+        expression_enabled = _bool_or_none(first_segment.get("expression_enabled"))
+        if expression_enabled is not None:
+            metrics["expression_enabled"] = 1.0 if expression_enabled else 0.0
         applied = _bool_or_none(first_segment.get("face_stitch_applied"))
         if applied is not None:
             metrics["face_stitch_applied_count"] = 1.0 if applied else 0.0
@@ -145,6 +151,12 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
             value = _float_or_none(first_segment.get(key))
             if value is not None:
                 metrics[key] = value
+        expression_applied = _bool_or_none(first_segment.get("expression_applied"))
+        if expression_applied is not None:
+            metrics["expression_applied_count"] = 1.0 if expression_applied else 0.0
+        expression_warning_count = _float_or_none(first_segment.get("expression_warning_count"))
+        if expression_warning_count is not None:
+            metrics["expression_warning_count"] = expression_warning_count
 
     segments = _stream_segments(summary)
     if segments:
@@ -188,6 +200,22 @@ def stream_metrics_from_summary(summary: dict[str, object], *, wall_ms: float) -
             ]
             if values:
                 metrics[key] = float(sum(values))
+        expression_applied_values = [
+            value
+            for value in (_bool_or_none(segment.get("expression_applied")) for segment in segments)
+            if value is not None
+        ]
+        if expression_applied_values:
+            metrics["expression_applied_count"] = float(
+                sum(1 for value in expression_applied_values if value)
+            )
+        expression_warning_values = [
+            value
+            for value in (_float_or_none(segment.get("expression_warning_count")) for segment in segments)
+            if value is not None
+        ]
+        if expression_warning_values:
+            metrics["expression_warning_count"] = float(sum(expression_warning_values))
 
     for key in ("old_turn_face_leak_count", "stale_face_drop_count"):
         value = _float_or_none(summary.get(key))

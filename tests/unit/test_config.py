@@ -265,6 +265,29 @@ def test_accepts_history_config() -> None:
     assert settings.history.max_chars == 512
 
 
+def test_accepts_expression_config() -> None:
+    settings = AppSettings.model_validate(
+        {
+            "expression": {
+                "enabled": True,
+                "channel_mapping_path": "config/expression_channels.example.json",
+                "max_delta": 0.2,
+                "profiles": {
+                    "happy": {
+                        "mouth_smile_left": 0.15,
+                        "mouth_smile_right": 0.15,
+                    }
+                },
+            }
+        }
+    )
+
+    assert settings.expression.enabled is True
+    assert settings.expression.channel_mapping_path == Path("config/expression_channels.example.json")
+    assert settings.expression.max_delta == pytest.approx(0.2)
+    assert settings.expression.profiles["happy"]["mouth_smile_left"] == pytest.approx(0.15)
+
+
 @pytest.mark.parametrize(
     "bad_config",
     [
