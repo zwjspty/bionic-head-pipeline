@@ -334,6 +334,7 @@ git commit -m "feat: add demo acceptance report builder"
 **Interfaces:**
 - Consumes: `write_json` from `demo_acceptance`
 - Produces:
+  - `collect_existing_artifacts(output_dir: Path, names: Mapping[str, Path]) -> dict[str, str]`
   - `http_get_json(url: str, timeout_sec: float = 5.0) -> tuple[bool, object | None, str | None]`
   - `collect_latest_artifacts(output_dir: Path, http_base_url: str | None, data_latest_dir: Path | None) -> dict[str, str]`
   - `scripts.collect_demo_artifacts.build_parser()`
@@ -349,7 +350,11 @@ import urllib.error
 import pytest
 
 from bionic_head.client import demo_artifacts
-from bionic_head.client.demo_artifacts import collect_latest_artifacts, http_get_json
+from bionic_head.client.demo_artifacts import (
+    collect_existing_artifacts,
+    collect_latest_artifacts,
+    http_get_json,
+)
 
 
 class FakeHTTPResponse:
@@ -415,6 +420,25 @@ def test_collect_latest_artifacts_copies_local_latest(tmp_path: Path) -> None:
     assert (output_dir / "artifacts" / "latest_ue5_blendshape.json").exists()
 
 
+def test_collect_existing_artifacts_tracks_present_and_missing_files(tmp_path: Path) -> None:
+    output_dir = tmp_path / "acceptance"
+    output_dir.mkdir()
+    present = output_dir / "scripted" / "summary.json"
+    present.parent.mkdir()
+    present.write_text("{}", encoding="utf-8")
+    missing = output_dir / "history" / "events.jsonl"
+
+    artifacts = collect_existing_artifacts(
+        output_dir,
+        {
+            "scripted_summary": present,
+            "history_events": missing,
+        },
+    )
+
+    assert artifacts == {"scripted_summary": "scripted/summary.json"}
+
+
 def test_collect_demo_artifacts_parser_accepts_paths() -> None:
     import scripts.collect_demo_artifacts as collect_script
 
@@ -456,6 +480,7 @@ import json
 import shutil
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 
 from bionic_head.client.demo_acceptance import write_json
@@ -504,6 +529,14 @@ def collect_latest_artifacts(
                 destination = artifact_dir / f"{name}.json"
                 write_json(destination, {"payload": payload})
                 artifacts[name] = destination.relative_to(output_dir).as_posix()
+    return artifacts
+
+
+def collect_existing_artifacts(output_dir: Path, names: Mapping[str, Path]) -> dict[str, str]:
+    artifacts: dict[str, str] = {}
+    for name, path in names.items():
+        if path.exists() and path.is_file():
+            artifacts[name] = path.relative_to(output_dir).as_posix()
     return artifacts
 ```
 
