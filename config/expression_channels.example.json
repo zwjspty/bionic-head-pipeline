@@ -1,0 +1,31 @@
+{
+  "format": "morpheus_52_raw",
+  "channel_count": 52,
+  "verified": false,
+  "channels": {
+    "jaw_open": null,
+    "mouth_smile_left": null,
+    "mouth_smile_right": null,
+    "mouth_frown_left": null,
+    "mouth_frown_right": null,
+    "eye_blink_left": null,
+    "eye_blink_right": null,
+    "brow_up_left": null,
+    "brow_up_right": null,
+    "brow_down_left": null,
+    "brow_down_right": null,
+    "cheek_raise_left": null,
+    "cheek_raise_right": null
+  },
+  "groups": {
+    "mouth": [],
+    "jaw": [],
+    "eyes": [],
+    "brows": [],
+    "cheeks": []
+  },
+  "notes": {
+    "source": "manual probe using scripts/probe_face_channels.py",
+    "do_not_use_for_expression_until_verified": true
+  }
+}
