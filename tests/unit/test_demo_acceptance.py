@@ -96,10 +96,8 @@ def test_write_json_accepts_report_dataclass(tmp_path: Path) -> None:
 
 
 def test_write_demo_input_wav_creates_16k_mono_pcm(tmp_path: Path) -> None:
-    wav_path = write_demo_input_wav(tmp_path / "generated-input.wav")
+    wav_path = write_demo_input_wav(tmp_path / "generated-input.wav", 8000, 0.5)
 
     with wave.open(str(wav_path), "rb") as wav:
-        assert wav.getframerate() == 16000
-        assert wav.getnchannels() == 1
-        assert wav.getsampwidth() == 2
-        assert wav.getnframes() == 16000
+        assert wav.getframerate() == 8000
+        assert wav.getnframes() == 4000

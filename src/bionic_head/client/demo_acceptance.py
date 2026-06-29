@@ -94,7 +94,6 @@ def write_json(path: Path, payload: Mapping[str, Any] | DemoAcceptanceReport) ->
 
 def write_demo_input_wav(
     path: Path,
-    *,
     sample_rate: int = 16000,
     duration_seconds: float = 1.0,
 ) -> Path:
