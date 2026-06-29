@@ -60,7 +60,7 @@ Cons:
 
 ### Approach B: small library plus thin scripts
 
-Create a reusable acceptance module under `src/bionic_head/client/demo_acceptance.py`. The CLI script calls this module. The collector script also uses this module.
+Create a reusable acceptance report module under `src/bionic_head/client/demo_acceptance.py` and a focused artifact collector module under `src/bionic_head/client/demo_artifacts.py`. The CLI scripts call these modules.
 
 Pros:
 
@@ -89,9 +89,10 @@ Cons:
 
 Use Approach B.
 
-The acceptance package gets its own module and two scripts:
+The acceptance package gets focused modules and two scripts:
 
 - `src/bionic_head/client/demo_acceptance.py`
+- `src/bionic_head/client/demo_artifacts.py`
 - `scripts/run_demo_acceptance.py`
 - `scripts/collect_demo_artifacts.py`
 
@@ -125,6 +126,8 @@ The runner can call existing Python functions directly where possible:
 Direct function calls keep tests fast and avoid fragile subprocess parsing.
 
 ### `DemoArtifactCollector`
+
+Implemented in `src/bionic_head/client/demo_artifacts.py`.
 
 Responsibilities:
 

@@ -4,7 +4,7 @@
 
 **Goal:** Build a repeatable local demo acceptance package that runs current scripted/history/interrupt/AV-sync checks, collects artifacts, and writes `demo_acceptance_report.json`.
 
-**Architecture:** Add a small testable acceptance module under `src/bionic_head/client/demo_acceptance.py`, with thin CLI scripts in `scripts/run_demo_acceptance.py` and `scripts/collect_demo_artifacts.py`. Reuse existing smoke functions instead of reimplementing WebSocket protocol loops.
+**Architecture:** Add a small testable acceptance report module under `src/bionic_head/client/demo_acceptance.py`, a focused artifact collector module under `src/bionic_head/client/demo_artifacts.py`, and thin CLI scripts in `scripts/run_demo_acceptance.py` and `scripts/collect_demo_artifacts.py`. Reuse existing smoke functions instead of reimplementing WebSocket protocol loops.
 
 **Tech Stack:** Python 3.10+/3.11-compatible code, asyncio, stdlib `urllib.request` for HTTP JSON checks, existing `websockets`-based smoke scripts, pytest.
 
@@ -24,9 +24,11 @@
 - Create `src/bionic_head/client/demo_acceptance.py`
   - dataclasses for check results and reports;
   - report aggregation;
+  - generated WAV helper.
+- Create `src/bionic_head/client/demo_artifacts.py`
   - artifact collection helpers;
-  - generated WAV helper;
   - HTTP JSON helper.
+  - latest artifact collection.
 - Create `scripts/run_demo_acceptance.py`
   - CLI parser;
   - async orchestration;
@@ -45,7 +47,7 @@
 
 ---
 
-## Task 1: Acceptance report and artifact core
+## Task 1: Acceptance report core
 
 **Files:**
 - Create: `src/bionic_head/client/demo_acceptance.py`
@@ -53,11 +55,10 @@
 
 **Interfaces:**
 - Produces:
-  - `DemoCheckResult`
+  - `AcceptanceCheckResult`
   - `DemoAcceptanceReport`
-  - `build_demo_acceptance_report(...)`
-  - `write_json(path: Path, payload: Mapping[str, object]) -> None`
-  - `collect_existing_artifacts(output_dir: Path, names: Mapping[str, Path]) -> dict[str, str]`
+  - `build_demo_acceptance_report(...) -> DemoAcceptanceReport`
+  - `write_json(path: Path, payload: Mapping[str, object] | DemoAcceptanceReport) -> None`
   - `write_demo_input_wav(path: Path, sample_rate: int = 16000, duration_seconds: float = 1.0) -> Path`
 
 - [ ] **Step 1: Write failing tests**
@@ -72,35 +73,40 @@ import wave
 from pathlib import Path
 
 from bionic_head.client.demo_acceptance import (
-    DemoCheckResult,
+    AcceptanceCheckResult,
+    DemoAcceptanceReport,
     build_demo_acceptance_report,
-    collect_existing_artifacts,
     write_demo_input_wav,
     write_json,
 )
 
 
-def test_build_report_fails_when_required_check_fails(tmp_path: Path) -> None:
+def test_build_report_fails_when_required_check_fails() -> None:
     report = build_demo_acceptance_report(
         mode="fake",
         server={"health_ok": True, "diagnostics_ok": True},
         checks={
-            "scripted_interactive_smoke": DemoCheckResult(
+            "scripted_interactive_smoke": AcceptanceCheckResult(
                 success=True,
                 artifacts={"interaction_report": "scripted/interaction_report.json"},
             ),
-            "history_smoke": DemoCheckResult(
+            "history_smoke": AcceptanceCheckResult(
                 success=False,
-                failure_reasons=["history_smoke_failed"],
+                failure_code="history_smoke_failed",
+                failure_message="History smoke did not preserve expected context.",
                 artifacts={"history_smoke_report": "history/history_smoke_report.json"},
             ),
         },
         artifacts={},
     )
 
-    assert report["success"] is False
-    assert "history_smoke:history_smoke_failed" in report["failure_reasons"]
-    assert report["checks"]["history_smoke"]["success"] is False
+    assert isinstance(report, DemoAcceptanceReport)
+    body = report.to_dict()
+    assert body["success"] is False
+    assert "history_smoke:history_smoke_failed" in body["failure_reasons"]
+    assert body["checks"]["history_smoke"]["success"] is False
+    assert body["checks"]["history_smoke"]["failure_code"] == "history_smoke_failed"
+    assert body["checks"]["history_smoke"]["failure_message"] == "History smoke did not preserve expected context."
 
 
 def test_build_report_succeeds_when_server_and_checks_pass() -> None:
@@ -108,42 +114,28 @@ def test_build_report_succeeds_when_server_and_checks_pass() -> None:
         mode="fake",
         server={"health_ok": True, "diagnostics_ok": True},
         checks={
-            "scripted_interactive_smoke": DemoCheckResult(success=True),
-            "history_smoke": DemoCheckResult(success=True),
+            "scripted_interactive_smoke": AcceptanceCheckResult(success=True),
+            "history_smoke": AcceptanceCheckResult(success=True),
         },
         artifacts={"latest_pipeline": "artifacts/latest_pipeline.json"},
     )
 
-    assert report["success"] is True
-    assert report["failure_reasons"] == []
-    assert report["artifacts"]["latest_pipeline"] == "artifacts/latest_pipeline.json"
+    body = report.to_dict()
+    assert body["success"] is True
+    assert body["failure_reasons"] == []
+    assert body["artifacts"]["latest_pipeline"] == "artifacts/latest_pipeline.json"
 
 
-def test_collect_existing_artifacts_returns_relative_paths(tmp_path: Path) -> None:
-    output_dir = tmp_path / "acceptance"
-    output_dir.mkdir()
-    summary = output_dir / "scripted" / "summary.json"
-    summary.parent.mkdir()
-    summary.write_text("{}", encoding="utf-8")
-
-    artifacts = collect_existing_artifacts(
-        output_dir,
-        {"scripted_summary": summary},
+def test_build_report_fails_when_server_health_fails() -> None:
+    report = build_demo_acceptance_report(
+        mode="fake",
+        server={"health_ok": False, "diagnostics_ok": True},
+        checks={"scripted_interactive_smoke": AcceptanceCheckResult(success=True)},
+        artifacts={},
     )
 
-    assert artifacts == {"scripted_summary": "scripted/summary.json"}
-
-
-def test_collect_existing_artifacts_skips_missing_files(tmp_path: Path) -> None:
-    output_dir = tmp_path / "acceptance"
-    output_dir.mkdir()
-
-    artifacts = collect_existing_artifacts(
-        output_dir,
-        {"missing": output_dir / "missing.json"},
-    )
-
-    assert artifacts == {}
+    assert report.success is False
+    assert "server:server_health_unreachable" in report.failure_reasons
 
 
 def test_write_json_creates_parent_and_writes_utf8(tmp_path: Path) -> None:
@@ -155,6 +147,20 @@ def test_write_json_creates_parent_and_writes_utf8(tmp_path: Path) -> None:
         "success": True,
         "message": "你好",
     }
+
+
+def test_write_json_accepts_report_dataclass(tmp_path: Path) -> None:
+    output = tmp_path / "report.json"
+    report = build_demo_acceptance_report(
+        mode="fake",
+        server={"health_ok": True, "diagnostics_ok": True},
+        checks={"scripted_interactive_smoke": AcceptanceCheckResult(success=True)},
+        artifacts={},
+    )
+
+    write_json(output, report)
+
+    assert json.loads(output.read_text(encoding="utf-8"))["success"] is True
 
 
 def test_write_demo_input_wav_creates_16k_mono_pcm(tmp_path: Path) -> None:
@@ -196,9 +202,10 @@ from typing import Any
 
 
 @dataclass
-class DemoCheckResult:
+class AcceptanceCheckResult:
     success: bool
-    failure_reasons: list[str] = field(default_factory=list)
+    failure_code: str | None = None
+    failure_message: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     error_message: str | None = None
@@ -206,9 +213,12 @@ class DemoCheckResult:
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "success": self.success,
-            "failure_reasons": self.failure_reasons,
             "artifacts": self.artifacts,
         }
+        if self.failure_code is not None:
+            payload["failure_code"] = self.failure_code
+        if self.failure_message is not None:
+            payload["failure_message"] = self.failure_message
         if self.metrics:
             payload["metrics"] = self.metrics
         if self.error_message is not None:
@@ -216,13 +226,35 @@ class DemoCheckResult:
         return payload
 
 
+@dataclass
+class DemoAcceptanceReport:
+    success: bool
+    generated_at: str
+    mode: str
+    server: dict[str, Any]
+    checks: dict[str, AcceptanceCheckResult]
+    artifacts: dict[str, str]
+    failure_reasons: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "success": self.success,
+            "generated_at": self.generated_at,
+            "mode": self.mode,
+            "server": self.server,
+            "checks": {name: check.to_dict() for name, check in self.checks.items()},
+            "artifacts": self.artifacts,
+            "failure_reasons": self.failure_reasons,
+        }
+
+
 def build_demo_acceptance_report(
     *,
     mode: str,
     server: Mapping[str, Any],
-    checks: Mapping[str, DemoCheckResult],
+    checks: Mapping[str, AcceptanceCheckResult],
     artifacts: Mapping[str, str],
-) -> dict[str, Any]:
+) -> DemoAcceptanceReport:
     failure_reasons: list[str] = []
     if not bool(server.get("health_ok")):
         failure_reasons.append("server:server_health_unreachable")
@@ -230,33 +262,24 @@ def build_demo_acceptance_report(
         failure_reasons.append("server:server_diagnostics_failed")
     for name, check in checks.items():
         if not check.success:
-            if check.failure_reasons:
-                failure_reasons.extend(f"{name}:{reason}" for reason in check.failure_reasons)
-            else:
-                failure_reasons.append(f"{name}:check_failed")
+            failure_reasons.append(f"{name}:{check.failure_code or 'check_failed'}")
 
-    return {
-        "success": not failure_reasons,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": mode,
-        "server": dict(server),
-        "checks": {name: check.to_dict() for name, check in checks.items()},
-        "artifacts": dict(artifacts),
-        "failure_reasons": failure_reasons,
-    }
+    return DemoAcceptanceReport(
+        success=not failure_reasons,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        mode=mode,
+        server=dict(server),
+        checks=dict(checks),
+        artifacts=dict(artifacts),
+        failure_reasons=failure_reasons,
+    )
 
 
-def write_json(path: Path, payload: Mapping[str, Any]) -> None:
+def write_json(path: Path, payload: Mapping[str, Any] | DemoAcceptanceReport) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(payload, DemoAcceptanceReport):
+        payload = payload.to_dict()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def collect_existing_artifacts(output_dir: Path, names: Mapping[str, Path]) -> dict[str, str]:
-    artifacts: dict[str, str] = {}
-    for name, path in names.items():
-        if path.exists() and path.is_file():
-            artifacts[name] = path.relative_to(output_dir).as_posix()
-    return artifacts
 
 
 def write_demo_input_wav(
@@ -296,7 +319,7 @@ Expected: tests in Task 1 pass.
 
 ```bash
 git add src/bionic_head/client/demo_acceptance.py tests/unit/test_demo_acceptance.py
-git commit -m "feat: add demo acceptance report core"
+git commit -m "feat: add demo acceptance report builder"
 ```
 
 ---
@@ -304,12 +327,12 @@ git commit -m "feat: add demo acceptance report core"
 ## Task 2: HTTP checks and artifact collection CLI
 
 **Files:**
-- Modify: `src/bionic_head/client/demo_acceptance.py`
+- Create: `src/bionic_head/client/demo_artifacts.py`
 - Create: `scripts/collect_demo_artifacts.py`
 - Test: `tests/unit/test_demo_acceptance.py`
 
 **Interfaces:**
-- Consumes: `write_json`, `collect_existing_artifacts`
+- Consumes: `write_json` from `demo_acceptance`
 - Produces:
   - `http_get_json(url: str, timeout_sec: float = 5.0) -> tuple[bool, object | None, str | None]`
   - `collect_latest_artifacts(output_dir: Path, http_base_url: str | None, data_latest_dir: Path | None) -> dict[str, str]`
@@ -325,8 +348,8 @@ import urllib.error
 
 import pytest
 
-from bionic_head.client import demo_acceptance
-from bionic_head.client.demo_acceptance import collect_latest_artifacts, http_get_json
+from bionic_head.client import demo_artifacts
+from bionic_head.client.demo_artifacts import collect_latest_artifacts, http_get_json
 
 
 class FakeHTTPResponse:
@@ -346,7 +369,7 @@ class FakeHTTPResponse:
 
 def test_http_get_json_returns_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        demo_acceptance.urllib.request,
+        demo_artifacts.urllib.request,
         "urlopen",
         lambda request, timeout: FakeHTTPResponse(b'{"status":"ok"}'),
     )
@@ -362,7 +385,7 @@ def test_http_get_json_handles_unreachable(monkeypatch: pytest.MonkeyPatch) -> N
     def raise_error(request, timeout):
         raise urllib.error.URLError("refused")
 
-    monkeypatch.setattr(demo_acceptance.urllib.request, "urlopen", raise_error)
+    monkeypatch.setattr(demo_artifacts.urllib.request, "urlopen", raise_error)
 
     ok, payload, error = http_get_json("http://127.0.0.1:8005/health")
 
@@ -424,12 +447,18 @@ Expected: missing `http_get_json`, `collect_latest_artifacts`, or script import 
 
 - [ ] **Step 3: Implement HTTP and collector helpers**
 
-Add to `src/bionic_head/client/demo_acceptance.py`:
+Create `src/bionic_head/client/demo_artifacts.py`:
 
 ```python
+from __future__ import annotations
+
+import json
 import shutil
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+from bionic_head.client.demo_acceptance import write_json
 
 
 def http_get_json(url: str, *, timeout_sec: float = 5.0) -> tuple[bool, object | None, str | None]:
@@ -494,7 +523,7 @@ for path in (PROJECT_ROOT, SRC_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from bionic_head.client.demo_acceptance import collect_latest_artifacts
+from bionic_head.client.demo_artifacts import collect_latest_artifacts
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -530,7 +559,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_demo_acceptance.py -q
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/bionic_head/client/demo_acceptance.py scripts/collect_demo_artifacts.py tests/unit/test_demo_acceptance.py
+git add src/bionic_head/client/demo_artifacts.py scripts/collect_demo_artifacts.py tests/unit/test_demo_acceptance.py
 git commit -m "feat: collect demo acceptance artifacts"
 ```
 
@@ -630,12 +659,11 @@ for path in (PROJECT_ROOT, SRC_ROOT):
         sys.path.insert(0, str(path))
 
 from bionic_head.client.demo_acceptance import (
-    DemoCheckResult,
+    AcceptanceCheckResult,
     build_demo_acceptance_report,
-    collect_latest_artifacts,
-    http_get_json,
     write_json,
 )
+from bionic_head.client.demo_artifacts import collect_latest_artifacts, http_get_json
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -670,7 +698,7 @@ async def run_demo_acceptance(args: argparse.Namespace) -> dict[str, object]:
     validate_args(args)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     server = await _check_server(args.http_base_url, timeout_sec=args.timeout_sec)
-    checks: dict[str, DemoCheckResult] = {}
+    checks: dict[str, AcceptanceCheckResult] = {}
     artifacts = collect_latest_artifacts(
         output_dir=args.output_dir,
         http_base_url=args.http_base_url,
@@ -873,7 +901,7 @@ from bionic_head.client.demo_acceptance import write_demo_input_wav
 In `run_demo_acceptance`, replace `checks = {}` with:
 
 ```python
-    checks: dict[str, DemoCheckResult] = {}
+    checks: dict[str, AcceptanceCheckResult] = {}
     checks["scripted_interactive_smoke"] = await _run_scripted_interactive_check(args)
     checks["history_smoke"] = await _run_history_check(args)
     checks["playback_interrupt_smoke"] = await _run_playback_interrupt_check(args)
@@ -884,7 +912,7 @@ In `run_demo_acceptance`, replace `checks = {}` with:
 Add helpers:
 
 ```python
-async def _run_scripted_interactive_check(args: argparse.Namespace) -> DemoCheckResult:
+async def _run_scripted_interactive_check(args: argparse.Namespace) -> AcceptanceCheckResult:
     output_dir = args.output_dir / "scripted_interactive_smoke"
     try:
         await interactive_demo_client.run_scripted_demo(
@@ -907,9 +935,10 @@ async def _run_scripted_interactive_check(args: argparse.Namespace) -> DemoCheck
             reasons.append("old_generation_audio_played")
         if int(report.get("old_generation_face_display_count", 0) or 0) != 0:
             reasons.append("old_generation_face_displayed")
-        return DemoCheckResult(
+        return AcceptanceCheckResult(
             success=not reasons,
-            failure_reasons=reasons,
+            failure_code=reasons[0] if reasons else None,
+            failure_message="; ".join(reasons) if reasons else None,
             artifacts=collect_existing_artifacts(
                 args.output_dir,
                 {
@@ -920,10 +949,10 @@ async def _run_scripted_interactive_check(args: argparse.Namespace) -> DemoCheck
             metrics={key: report.get(key) for key in ("turn_count", "completed_turn_count", "cancelled_turn_count")},
         )
     except Exception as exc:  # noqa: BLE001
-        return DemoCheckResult(False, ["scripted_interactive_exception"], error_message=str(exc))
+        return AcceptanceCheckResult(False, failure_code="scripted_interactive_exception", error_message=str(exc))
 
 
-async def _run_history_check(args: argparse.Namespace) -> DemoCheckResult:
+async def _run_history_check(args: argparse.Namespace) -> AcceptanceCheckResult:
     output_dir = args.output_dir / "history_smoke"
     try:
         report = await history_smoke.run_history_smoke(
@@ -936,9 +965,10 @@ async def _run_history_check(args: argparse.Namespace) -> DemoCheckResult:
             chunk_ms=args.chunk_ms,
             timeout_sec=args.timeout_sec,
         )
-        return DemoCheckResult(
+        return AcceptanceCheckResult(
             success=report.success,
-            failure_reasons=list(report.failure_reasons),
+            failure_code=report.failure_reasons[0] if report.failure_reasons else None,
+            failure_message="; ".join(report.failure_reasons) if report.failure_reasons else None,
             artifacts=collect_existing_artifacts(
                 args.output_dir,
                 {
@@ -949,10 +979,10 @@ async def _run_history_check(args: argparse.Namespace) -> DemoCheckResult:
             ),
         )
     except Exception as exc:  # noqa: BLE001
-        return DemoCheckResult(False, ["history_smoke_exception"], error_message=str(exc))
+        return AcceptanceCheckResult(False, failure_code="history_smoke_exception", error_message=str(exc))
 
 
-async def _run_playback_interrupt_check(args: argparse.Namespace) -> DemoCheckResult:
+async def _run_playback_interrupt_check(args: argparse.Namespace) -> AcceptanceCheckResult:
     output_dir = args.output_dir / "playback_interrupt_smoke"
     wav_path = write_demo_input_wav(args.output_dir / "generated-input.wav")
     try:
@@ -971,9 +1001,10 @@ async def _run_playback_interrupt_check(args: argparse.Namespace) -> DemoCheckRe
             int(summary.get("playback_stop_count", 0) or 0) >= 1
             and summary.get("client_interrupt_sent_ms") is not None
         )
-        return DemoCheckResult(
+        return AcceptanceCheckResult(
             success=evidence,
-            failure_reasons=[] if evidence else ["playback_interrupt_failed"],
+            failure_code=None if evidence else "playback_interrupt_failed",
+            failure_message=None if evidence else "Playback interrupt did not produce cancel or playback-stop evidence.",
             artifacts=collect_existing_artifacts(
                 args.output_dir,
                 {
@@ -988,10 +1019,10 @@ async def _run_playback_interrupt_check(args: argparse.Namespace) -> DemoCheckRe
             },
         )
     except Exception as exc:  # noqa: BLE001
-        return DemoCheckResult(False, ["playback_interrupt_exception"], error_message=str(exc))
+        return AcceptanceCheckResult(False, failure_code="playback_interrupt_exception", error_message=str(exc))
 
 
-async def _run_av_sync_check(args: argparse.Namespace, *, playback_sync: str) -> DemoCheckResult:
+async def _run_av_sync_check(args: argparse.Namespace, *, playback_sync: str) -> AcceptanceCheckResult:
     output_dir = args.output_dir / f"av_sync_{playback_sync}"
     try:
         await interactive_demo_client.run_scripted_demo(
@@ -1019,9 +1050,10 @@ async def _run_av_sync_check(args: argparse.Namespace, *, playback_sync: str) ->
                 reasons.append("av_sync_wait_missing")
             if report.get("client_audio_wait_for_face_timeout") is True:
                 reasons.append("av_sync_wait_for_face_timeout")
-        return DemoCheckResult(
+        return AcceptanceCheckResult(
             success=not reasons,
-            failure_reasons=reasons,
+            failure_code=reasons[0] if reasons else None,
+            failure_message="; ".join(reasons) if reasons else None,
             artifacts=collect_existing_artifacts(
                 args.output_dir,
                 {
@@ -1037,7 +1069,7 @@ async def _run_av_sync_check(args: argparse.Namespace, *, playback_sync: str) ->
             },
         )
     except Exception as exc:  # noqa: BLE001
-        return DemoCheckResult(False, [f"av_sync_{playback_sync}_exception"], error_message=str(exc))
+        return AcceptanceCheckResult(False, failure_code=f"av_sync_{playback_sync}_exception", error_message=str(exc))
 
 
 def _read_json(path: Path) -> dict[str, object]:
