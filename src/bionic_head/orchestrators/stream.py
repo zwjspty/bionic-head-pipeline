@@ -26,6 +26,11 @@ from bionic_head.domain.models import (
     TurnContext,
     UE5Payload,
 )
+from bionic_head.expression import (
+    ExpressionMetrics,
+    ExpressionPostProcessor,
+    load_expression_channel_mapping,
+)
 from bionic_head.eye_continuity import EyeContinuityMetrics, EyeContinuityProcessor
 from bionic_head.face_stitcher import FaceSegmentStitcher, FaceStitchMetrics
 from bionic_head.protocol.events import EventEnvelope, EventFactory, EventType
@@ -49,6 +54,7 @@ class _RawFaceSegmentResult:
     chunk_index: int
     chunk_id: str
     face: FaceArtifact
+    llm: LLMResult
     segment_timing: "_StreamSegmentTiming"
 
 
@@ -94,6 +100,13 @@ class _StreamSegmentTiming:
     blink_reset_count: float | None = None
     eye_global_frame_start: float | None = None
     eye_global_frame_end: float | None = None
+    expression_enabled: bool | None = None
+    expression_applied: bool | None = None
+    expression_emotion: str | None = None
+    expression_intensity: float | None = None
+    expression_profile_channel_count: float | None = None
+    expression_max_delta: float | None = None
+    expression_warning_count: float | None = None
     stale_dropped: bool = False
 
     @property
@@ -129,6 +142,13 @@ class _StreamSegmentTiming:
             "blink_reset_count": self.blink_reset_count,
             "eye_global_frame_start": self.eye_global_frame_start,
             "eye_global_frame_end": self.eye_global_frame_end,
+            "expression_enabled": self.expression_enabled,
+            "expression_applied": self.expression_applied,
+            "expression_emotion": self.expression_emotion,
+            "expression_intensity": self.expression_intensity,
+            "expression_profile_channel_count": self.expression_profile_channel_count,
+            "expression_max_delta": self.expression_max_delta,
+            "expression_warning_count": self.expression_warning_count,
         }
         for key, value in optional.items():
             if value is not None:
@@ -172,6 +192,15 @@ class _StreamSegmentTiming:
         if record_boundary_metrics:
             self.eye_boundary_delta_before = metrics.boundary_delta_before
             self.eye_boundary_delta_after = metrics.boundary_delta_after
+
+    def apply_expression_metrics(self, metrics: ExpressionMetrics) -> None:
+        self.expression_enabled = metrics.enabled
+        self.expression_applied = metrics.applied
+        self.expression_emotion = metrics.expression_emotion
+        self.expression_intensity = metrics.expression_intensity
+        self.expression_profile_channel_count = float(metrics.profile_channel_count)
+        self.expression_max_delta = metrics.expression_max_delta
+        self.expression_warning_count = float(metrics.warning_count)
 
     def snapshot(self) -> dict[str, object]:
         item: dict[str, object] = {
@@ -316,6 +345,17 @@ class StreamOrchestrator:
             seed=self.settings.eye_continuity.seed,
             reset_blink_on_new_turn=self.settings.eye_continuity.reset_blink_on_new_turn,
         )
+        expression_mapping = None
+        if self.settings.expression.channel_mapping_path is not None:
+            mapping_path = Path(self.settings.expression.channel_mapping_path)
+            if self.settings.expression.enabled or mapping_path.exists():
+                expression_mapping = load_expression_channel_mapping(mapping_path)
+        expression_processor = ExpressionPostProcessor(
+            enabled=self.settings.expression.enabled,
+            mapping=expression_mapping,
+            profiles=self.settings.expression.profiles,
+            max_delta=self.settings.expression.max_delta,
+        )
         marks: set[str] = set()
         artifacts = _StreamArtifacts()
         face_tasks: dict[int, asyncio.Task[_RawFaceSegmentResult]] = {}
@@ -389,6 +429,7 @@ class StreamOrchestrator:
                         raw_result.chunk_index,
                         raw_result.chunk_id,
                         raw_result.face,
+                        raw_result.llm,
                         turn,
                         context,
                         factory,
@@ -398,6 +439,7 @@ class StreamOrchestrator:
                         raw_result.segment_timing,
                         face_stitcher,
                         eye_continuity,
+                        expression_processor,
                         emit_json,
                     )
                 )
@@ -666,6 +708,7 @@ class StreamOrchestrator:
                 chunk_index=chunk_index,
                 chunk_id=chunk_id,
                 face=face,
+                llm=llm,
                 segment_timing=segment_timing,
             )
         except asyncio.CancelledError:
@@ -677,6 +720,7 @@ class StreamOrchestrator:
         chunk_index: int,
         chunk_id: str,
         face: FaceArtifact,
+        llm: LLMResult,
         turn: TurnHandle,
         context: TurnContext,
         factory: EventFactory,
@@ -686,6 +730,7 @@ class StreamOrchestrator:
         segment_timing: _StreamSegmentTiming,
         face_stitcher: FaceSegmentStitcher,
         eye_continuity: EyeContinuityProcessor,
+        expression_processor: ExpressionPostProcessor,
         emit_json: EmitJSON,
     ) -> _FaceSegmentResult:
         try:
@@ -725,6 +770,19 @@ class StreamOrchestrator:
                     update={
                         "frames": eye_frames,
                         "frame_count": len(eye_frames),
+                    }
+                )
+            expression_frames, expression_metrics = expression_processor.process(
+                face.frames,
+                emotion=llm.emotion,
+                intensity=llm.intensity,
+            )
+            segment_timing.apply_expression_metrics(expression_metrics)
+            if expression_frames != face.frames:
+                face = face.model_copy(
+                    update={
+                        "frames": expression_frames,
+                        "frame_count": len(expression_frames),
                     }
                 )
             mark_once("first_face_ready")

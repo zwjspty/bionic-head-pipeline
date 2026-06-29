@@ -593,6 +593,54 @@ async def test_stream_applies_eye_continuity_after_stitching_and_records_metrics
 
 
 @pytest.mark.asyncio
+async def test_stream_applies_expression_after_eye_continuity_and_records_metrics(
+    mock_settings,
+    stream_harness_factory,
+) -> None:
+    settings = mock_settings.model_copy(deep=True)
+    settings.mock.emotion = Emotion.HAPPY
+    settings.mock.intensity = 0.8
+    settings.face_stitching.enabled = False
+    settings.eye_continuity.enabled = False
+    settings.expression.enabled = True
+    settings.expression.channel_mapping_path = "config/expression_channels.example.json"
+    settings.expression.max_delta = 0.3
+    settings.expression.profiles = {
+        "happy": {
+            "mouth_smile_left": 0.2,
+        }
+    }
+    registry = build_registry(settings)
+    registry = AdapterRegistry(
+        asr=registry.asr,
+        llm=registry.llm,
+        tts=registry.tts,
+        audio2face=_ConstantSequenceAudio2FaceAdapter(),
+        ue5=registry.ue5,
+    )
+    harness = stream_harness_factory(settings=settings, registry=registry)
+
+    await harness.run()
+
+    face_payload = next(
+        envelope.payload
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.face.frames"
+    )
+    timing = face_payload["timing"]
+
+    assert face_payload["frames"][0][43] == pytest.approx(0.16)
+    assert face_payload["frames"][0][44] == pytest.approx(0.0)
+    assert timing["expression_enabled"] is True
+    assert timing["expression_applied"] is True
+    assert timing["expression_emotion"] == "happy"
+    assert timing["expression_intensity"] == pytest.approx(0.8)
+    assert timing["expression_profile_channel_count"] == 1.0
+    assert timing["expression_max_delta"] == pytest.approx(0.16)
+    assert timing["expression_warning_count"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_stream_does_not_block_later_tts_on_slow_face(
     mock_settings,
     stream_harness_factory,

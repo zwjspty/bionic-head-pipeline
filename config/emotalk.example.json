@@ -43,6 +43,18 @@
     "max_turn_pairs": 6,
     "max_chars": 3000
   },
+  "expression": {
+    "enabled": false,
+    "channel_mapping_path": "config/expression_channels.example.json",
+    "max_delta": 0.3,
+    "profiles": {
+      "happy": {"mouth_smile_left": 0.15, "mouth_smile_right": 0.15},
+      "friendly": {"mouth_smile_left": 0.08, "mouth_smile_right": 0.08},
+      "surprised": {"jaw_open": 0.18},
+      "sad": {"mouth_frown_left": 0.1, "mouth_frown_right": 0.1},
+      "thinking": {"brow_down_left": 0.08, "brow_down_right": 0.08}
+    }
+  },
   "adapters": {
     "asr": {"provider": "faster-whisper", "timeout_seconds": 120},
     "llm": {"provider": "ollama", "timeout_seconds": 180},

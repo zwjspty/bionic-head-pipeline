@@ -51,59 +51,75 @@ for i in $(seq -w 0 51); do
 done
 ```
 
+## Rendered verification artifacts
+
+The first partial mapping was verified from these local grey-head artifacts:
+
+```text
+/tmp/bionic-channel-probes/
+/tmp/bionic-channel-videos/
+/tmp/bionic-channel-pairs/contact-sheet.png
+/tmp/bionic-channel-sheets/upper_00_23.png
+/tmp/bionic-channel-sheets/mouth_24_51.png
+/tmp/bionic-channel-eye-crops/eye-candidates.png
+```
+
+The generated videos are temporary artifacts and are not committed. Re-run the
+commands above to reproduce them.
+
 ## Observation table
 
 | Channel | Observed effect | Confidence | Notes |
 |---:|---|---|---|
-| 0 | pending | low | |
-| 1 | pending | low | |
-| 2 | pending | low | |
-| 3 | pending | low | |
-| 4 | pending | low | |
-| 5 | pending | low | |
-| 6 | pending | low | |
-| 7 | pending | low | |
-| 8 | pending | low | |
-| 9 | pending | low | |
-| 10 | pending | low | |
-| 11 | pending | low | |
-| 12 | pending | low | |
-| 13 | pending | low | |
-| 14 | pending | low | |
-| 15 | pending | low | |
-| 16 | pending | low | |
-| 17 | pending | low | |
-| 18 | pending | low | |
-| 19 | pending | low | |
-| 20 | pending | low | |
-| 21 | pending | low | |
-| 22 | pending | low | |
-| 23 | pending | low | |
-| 24 | pending | low | |
-| 25 | pending | low | |
-| 26 | pending | low | |
-| 27 | pending | low | |
-| 28 | pending | low | |
-| 29 | pending | low | |
-| 30 | pending | low | |
-| 31 | pending | low | |
-| 32 | pending | low | |
-| 33 | pending | low | |
-| 34 | pending | low | |
-| 35 | pending | low | |
-| 36 | pending | low | |
-| 37 | pending | low | |
-| 38 | pending | low | |
-| 39 | pending | low | |
-| 40 | pending | low | |
-| 41 | pending | low | |
-| 42 | pending | low | |
-| 43 | pending | low | |
-| 44 | pending | low | |
-| 45 | pending | low | |
-| 46 | pending | low | |
-| 47 | pending | low | |
-| 48 | pending | low | |
-| 49 | pending | low | |
-| 50 | pending | low | |
-| 51 | pending | low | |
+| 0 | brow down / inner brow crease on viewer-right side | medium | mapped as `brow_down_left`; left/right inferred from frontal render |
+| 1 | brow down / forehead ridge on viewer-left side | medium | mapped as `brow_down_right`; left/right inferred from frontal render |
+| 2 | brow/upper eyelid lift, broad upper-face change | low | keep out of expression profiles until rechecked |
+| 3 | one-sided brow/eye opening on viewer-right side | low | eye/brow mixed; not mapped as blink |
+| 4 | brow squeeze / eye squint | medium | regional brow group only |
+| 5 | subtle nose/cheek/lower-face change | low | no semantic mapping |
+| 6 | subtle nose/cheek asymmetry | low | no semantic mapping |
+| 7 | subtle eye/cheek change | low | no semantic mapping |
+| 8 | viewer-right eyelid squint/partial close | medium | regional eye/brow group only; not mapped as blink yet |
+| 9 | subtle eye/cheek change | low | no semantic mapping |
+| 10 | subtle brow/eye change | low | no semantic mapping |
+| 11 | subtle brow/eye change | low | no semantic mapping |
+| 12 | subtle cheek/eye change | low | no semantic mapping |
+| 13 | subtle cheek/eye change | low | no semantic mapping |
+| 14 | subtle viewer-left eyelid/eye shape change | medium | regional eye/brow group only; not mapped as blink yet |
+| 15 | subtle eye/cheek change | low | no semantic mapping |
+| 16 | subtle nose/cheek change | low | no semantic mapping |
+| 17 | subtle eye/cheek change | low | no semantic mapping |
+| 18 | subtle brow/eye change | low | no semantic mapping |
+| 19 | subtle brow/eye change | low | no semantic mapping |
+| 20 | viewer-right eyelid/eye opening shape change | medium | regional eye/brow group only |
+| 21 | subtle eye/cheek change | low | no semantic mapping |
+| 22 | lower cheek / mouth-area compression | low | no semantic mapping |
+| 23 | mouth corner / lower cheek asymmetry | low | no semantic mapping |
+| 24 | jaw open / mouth open | high | mapped as `jaw_open` |
+| 25 | subtle mouth corner / cheek pull | low | no semantic mapping |
+| 26 | lip press / mouth compression | medium | regional mouth group only |
+| 27 | subtle mouth corner / lower cheek change | low | no semantic mapping |
+| 28 | subtle mouth corner pull | low | no semantic mapping |
+| 29 | subtle lower lip / mouth change | low | no semantic mapping |
+| 30 | subtle mouth / lower-face change | low | no semantic mapping |
+| 31 | rounded lip pucker, “oo” shape | high | mapped as `mouth_pucker` |
+| 32 | one-sided mouth corner smile/pull on viewer-left side | medium | regional mouth group only |
+| 33 | mouth twist / side pull | low | no semantic mapping |
+| 34 | mouth protrude / side pull | low | no semantic mapping |
+| 35 | mild mouth corner lift | low | no semantic mapping |
+| 36 | lower lip / chin compression | low | no semantic mapping |
+| 37 | narrow lip funnel / pucker | high | mapped as `mouth_funnel` |
+| 38 | slight smile / mouth-corner lift | medium | regional mouth group only |
+| 39 | lip press / mouth-corner downturn | medium | mapped as `mouth_press` |
+| 40 | lip press / lower-lip raise | medium | regional mouth group only |
+| 41 | subtle mouth/nasolabial change | low | no semantic mapping |
+| 42 | subtle mouth-corner downturn | low | no semantic mapping |
+| 43 | smile / mouth corner lift on viewer-right side | high | mapped as `mouth_smile_left`; left/right inferred from frontal render |
+| 44 | smile / mouth corner lift on viewer-left side | high | mapped as `mouth_smile_right`; left/right inferred from frontal render |
+| 45 | subtle mouth/lip downturn | low | no semantic mapping |
+| 46 | subtle lower mouth change | low | no semantic mapping |
+| 47 | frown / mouth corner down on viewer-right side | medium | mapped as `mouth_frown_left`; left/right inferred from frontal render |
+| 48 | frown / mouth corner down on viewer-left side | medium | mapped as `mouth_frown_right`; left/right inferred from frontal render |
+| 49 | subtle brow/mouth change | low | no semantic mapping |
+| 50 | subtle nose/mouth asymmetry | low | no semantic mapping |
+| 51 | subtle mouth corner / cheek change | low | no semantic mapping |

@@ -99,6 +99,15 @@ class HistorySettings(BaseModel):
     max_chars: int = Field(default=3000, ge=1)
 
 
+class ExpressionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    channel_mapping_path: Path | None = Path("config/expression_channels.example.json")
+    max_delta: float = Field(default=0.3, ge=0.0)
+    profiles: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
 class AdapterSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -245,6 +254,7 @@ class AppSettings(BaseModel):
     face_stitching: FaceStitchingSettings = Field(default_factory=FaceStitchingSettings)
     eye_continuity: EyeContinuitySettings = Field(default_factory=EyeContinuitySettings)
     history: HistorySettings = Field(default_factory=HistorySettings)
+    expression: ExpressionSettings = Field(default_factory=ExpressionSettings)
     adapters: AdaptersSettings = Field(default_factory=AdaptersSettings)
     mock: MockSettings = Field(default_factory=MockSettings)
     providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
