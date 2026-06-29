@@ -336,6 +336,30 @@ async def test_stream_records_history_metrics_in_timeline(
 
 
 @pytest.mark.asyncio
+async def test_stream_pipeline_done_payload_includes_history_metrics(
+    stream_harness_factory,
+) -> None:
+    history = ConversationHistoryStore(max_turn_pairs=6, max_chars=3000)
+    harness = stream_harness_factory(history=history)
+    history.append_pair(
+        harness.turn.session_id,
+        user="我叫小张。",
+        assistant="你好小张。",
+    )
+
+    await harness.run()
+
+    done = next(
+        envelope
+        for envelope in harness.json_envelopes
+        if envelope.type.value == "server.pipeline.done"
+    )
+    assert done.payload["history_enabled"] is True
+    assert done.payload["history_turn_count_before"] == 1
+    assert done.payload["history_turn_count_after"] == 2
+
+
+@pytest.mark.asyncio
 async def test_stream_provider_error_does_not_commit_history(
     mock_settings,
     stream_harness_factory,
