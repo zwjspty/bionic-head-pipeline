@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from pathlib import Path
 import urllib.error
 import wave
@@ -313,3 +314,79 @@ def test_run_demo_acceptance_parser_rejects_real_without_history_wavs() -> None:
 
     with pytest.raises(SystemExit, match="real mode requires"):
         runner.validate_args(args)
+
+
+def test_run_demo_acceptance_collects_health_diagnostics_artifacts_and_returns_dict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scripts.run_demo_acceptance as runner
+
+    parser = runner.build_parser()
+    args = parser.parse_args(
+        [
+            "--url",
+            "ws://127.0.0.1:8005/pipeline/stream",
+            "--http-base-url",
+            "http://127.0.0.1:8005",
+            "--output-dir",
+            str(tmp_path / "acceptance" / "output"),
+        ]
+    )
+
+    output_dir = args.output_dir
+    assert not output_dir.exists()
+    args.data_latest_dir = tmp_path / "data" / "latest"
+    args.data_latest_dir.mkdir(parents=True, exist_ok=True)
+
+    health_requests: list[str] = []
+    diag_requests: list[str] = []
+
+    def fake_http_get_json(url: str, timeout_sec: float) -> tuple[bool, object | None, str | None]:
+        if url.endswith("/health"):
+            health_requests.append(url)
+            return True, {"status": "ok"}, None
+        if url.endswith("/diagnostics"):
+            diag_requests.append(url)
+            return True, {"status": "ok"}, None
+        raise AssertionError(f"unexpected endpoint: {url}")
+
+    monkeypatch.setattr(runner, "http_get_json", fake_http_get_json)
+
+    collect_calls: dict[str, object] = {}
+
+    def fake_collect_latest_artifacts(
+        *,
+        output_dir: Path,
+        http_base_url: str,
+        data_latest_dir: Path | None,
+        timeout_sec: float,
+    ) -> dict[str, str]:
+        collect_calls["output_dir"] = output_dir
+        collect_calls["http_base_url"] = http_base_url
+        collect_calls["data_latest_dir"] = data_latest_dir
+        collect_calls["timeout_sec"] = timeout_sec
+        return {"latest_pipeline": "artifacts/latest_pipeline.json"}
+
+    monkeypatch.setattr(runner, "collect_latest_artifacts", fake_collect_latest_artifacts)
+
+    report = asyncio.run(runner.run_demo_acceptance(args))
+
+    assert isinstance(report, dict)
+    assert report["success"] is True
+    assert "latest_pipeline" in report["artifacts"]
+    assert output_dir.exists()
+    assert health_requests and diag_requests
+    assert any(url.endswith("/health") for url in health_requests)
+    assert any(url.endswith("/diagnostics") for url in diag_requests)
+
+    assert collect_calls == {
+        "output_dir": output_dir,
+        "http_base_url": "http://127.0.0.1:8005",
+        "data_latest_dir": args.data_latest_dir,
+        "timeout_sec": args.timeout_sec,
+    }
+
+    report_path = output_dir / "demo_acceptance_report.json"
+    assert report_path.exists()
+    file_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert file_payload == report

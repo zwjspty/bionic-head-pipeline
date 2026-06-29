@@ -64,7 +64,7 @@ async def run_demo_acceptance(args: argparse.Namespace) -> dict[str, object]:
         server=server,
         checks=checks,
         artifacts=artifacts,
-    )
+    ).to_dict()
     write_json(args.output_dir / "demo_acceptance_report.json", report)
     return report
 
