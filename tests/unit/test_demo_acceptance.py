@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import asyncio
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 import urllib.error
 import wave
@@ -37,6 +39,33 @@ class FakeHTTPResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+def test_run_demo_acceptance_help_runs_by_path() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/run_demo_acceptance.py", "--help"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert result.returncode == 0
+    assert "--playback-sync" in result.stdout
+    assert "--history-turn1-wav" in result.stdout
+
+
+def test_collect_demo_artifacts_help_runs_by_path() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/collect_demo_artifacts.py", "--help"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert result.returncode == 0
+    assert "--output-dir" in result.stdout
 
 
 def test_build_report_fails_when_required_check_fails() -> None:
