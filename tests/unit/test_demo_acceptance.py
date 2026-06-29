@@ -581,6 +581,66 @@ async def test_run_demo_acceptance_writes_report_when_history_smoke_exits(
 
 
 @pytest.mark.parametrize(
+    ("report_counts", "expected_fragment"),
+    [
+        (
+            {"turn_count": 1, "completed_turn_count": 1, "cancelled_turn_count": 1},
+            "turn_count expected 2 got 1",
+        ),
+        (
+            {"turn_count": 2, "completed_turn_count": 2, "cancelled_turn_count": 1},
+            "completed_turn_count expected 1 got 2",
+        ),
+        (
+            {"turn_count": 2, "completed_turn_count": 1, "cancelled_turn_count": 0},
+            "cancelled_turn_count expected 1 got 0",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_scripted_interactive_check_fails_when_acceptance_counts_do_not_match(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    report_counts: dict[str, int],
+    expected_fragment: str,
+) -> None:
+    import scripts.run_demo_acceptance as runner
+
+    async def fake_scripted_demo(**kwargs):
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            output_dir / "interaction_report.json",
+            {
+                "success": True,
+                "old_generation_audio_play_count": 0,
+                "old_generation_face_display_count": 0,
+                **report_counts,
+            },
+        )
+        write_json(output_dir / "summary.json", {"terminal_event": "server.pipeline.done"})
+        return "server.pipeline.done"
+
+    monkeypatch.setattr(runner.interactive_demo_client, "run_scripted_demo", fake_scripted_demo)
+
+    args = argparse.Namespace(
+        url="ws://127.0.0.1:8005/pipeline/stream",
+        output_dir=tmp_path,
+        chunk_ms=40,
+        audio_backend="null",
+        wait_for_face_timeout_ms=800,
+        timeout_sec=30.0,
+    )
+
+    result = await runner._run_scripted_interactive_check(args)
+
+    assert result.success is False
+    assert result.failure_code == "scripted_interactive_counts_invalid"
+    assert expected_fragment in (result.failure_message or "")
+    assert result.metrics == report_counts
+
+
+@pytest.mark.parametrize(
     ("mode", "history_turn1_wav", "history_turn2_wav", "expected_internal_mode"),
     [
         ("fake", None, None, "mock"),

@@ -114,8 +114,20 @@ async def _run_scripted_interactive_check(args: argparse.Namespace) -> Acceptanc
         )
         report = _read_json(output_dir / "interaction_report.json")
         reasons: list[str] = []
+        count_failures: list[str] = []
         if not bool(report.get("success")):
             reasons.append("scripted_interactive_failed")
+        expected_counts = {
+            "turn_count": 2,
+            "completed_turn_count": 1,
+            "cancelled_turn_count": 1,
+        }
+        for key, expected_value in expected_counts.items():
+            actual_value = int(report.get(key, 0) or 0)
+            if actual_value != expected_value:
+                count_failures.append(f"{key} expected {expected_value} got {actual_value}")
+        if count_failures:
+            reasons.append("scripted_interactive_counts_invalid")
         if int(report.get("old_generation_audio_play_count", 0) or 0) != 0:
             reasons.append("old_generation_audio_played")
         if int(report.get("old_generation_face_display_count", 0) or 0) != 0:
@@ -123,7 +135,7 @@ async def _run_scripted_interactive_check(args: argparse.Namespace) -> Acceptanc
         return AcceptanceCheckResult(
             success=not reasons,
             failure_code=reasons[0] if reasons else None,
-            failure_message="; ".join(reasons) if reasons else None,
+            failure_message="; ".join([*reasons, *count_failures]) if reasons else None,
             artifacts=collect_existing_artifacts(
                 args.output_dir,
                 {
