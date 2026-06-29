@@ -37,7 +37,7 @@
 - Produces: `PlaybackClock.metrics() -> dict[str, object]`
 - Produces: `PlaybackClock.segment_metrics() -> dict[str, dict[str, object]]`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_clock_records_audio_face_offset():
@@ -72,7 +72,7 @@ def test_clock_records_wait_for_face_and_stop_offsets():
     assert metrics["client_playback_stop_to_face_clear_ms"] == 60.0
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -82,12 +82,12 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_playback_clock.py -q
 
 Expected: import failure or missing `PlaybackClock`.
 
-- [ ] **Step 3: Implement minimal PlaybackClock**
+- [x] **Step 3: Implement minimal PlaybackClock**
 
 Create dataclasses for per-segment timestamps, compute first top-level metrics,
 and preserve all per-segment metrics under `playback_segments`.
 
-- [ ] **Step 4: Run tests and verify GREEN**
+- [x] **Step 4: Run tests and verify GREEN**
 
 Run:
 
@@ -97,7 +97,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_playback_clock.py -q
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/bionic_head/client/playback_clock.py tests/unit/test_playback_clock.py
@@ -121,7 +121,7 @@ git commit -m "feat: add client playback clock metrics"
 - Produces: `flush_timeouts(now_ms: float | None = None) -> list[PlaybackAction]`
 - Produces: `clear(reason: str) -> None`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Tests must cover:
 
@@ -132,13 +132,13 @@ Tests must cover:
 - stale generation events are dropped.
 - `clear()` removes pending segments.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_segment_sync.py -q
 ```
 
-- [ ] **Step 3: Implement coordinator**
+- [x] **Step 3: Implement coordinator**
 
 Use a small action dataclass:
 
@@ -153,13 +153,13 @@ class PlaybackAction:
     face_payload: dict[str, object] | None = None
 ```
 
-- [ ] **Step 4: Run tests and verify GREEN**
+- [x] **Step 4: Run tests and verify GREEN**
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_segment_sync.py -q
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/bionic_head/client/segment_sync.py tests/unit/test_segment_sync.py
@@ -180,7 +180,7 @@ git commit -m "feat: add client segment sync coordinator"
 - Adds CLI: `--playback-sync {immediate_audio,wait_for_face}`
 - Adds CLI: `--wait-for-face-timeout-ms 800`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add tests for:
 
@@ -190,24 +190,24 @@ Add tests for:
 - summary includes `playback_sync_strategy`, `client_audio_wait_for_face_ms`, and `client_audio_face_offset_ms`.
 - playback stop clears pending sync.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_local_demo_client.py -q
 ```
 
-- [ ] **Step 3: Wire coordinator into LocalDemoReceiver**
+- [x] **Step 3: Wire coordinator into LocalDemoReceiver**
 
 Replace direct `audio.enqueue_wav()` and `face.enqueue_frames()` calls with
 coordinator actions. Preserve file writing for `tts/` and `ue5/`.
 
-- [ ] **Step 4: Run tests and verify GREEN**
+- [x] **Step 4: Run tests and verify GREEN**
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_local_demo_client.py -q
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/local_demo_client.py tests/unit/test_local_demo_client.py
@@ -229,7 +229,7 @@ git commit -m "feat: sync local demo audio and face playback"
 - Adds CLI: `--wait-for-face-timeout-ms 800`
 - Interaction report includes AV sync metrics.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add tests for:
 
@@ -239,24 +239,24 @@ Add tests for:
 - scripted mode can run with `wait_for_face`.
 - interaction report includes `client_audio_face_offset_ms`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_interactive_demo_client.py tests/unit/test_scripted_interactive_client.py -q
 ```
 
-- [ ] **Step 3: Wire strategy through interactive/scripted paths**
+- [x] **Step 3: Wire strategy through interactive/scripted paths**
 
 Pass `playback_sync` and `wait_for_face_timeout_ms` from CLI to
 `LocalDemoReceiver`.
 
-- [ ] **Step 4: Run tests and verify GREEN**
+- [x] **Step 4: Run tests and verify GREEN**
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/unit/test_interactive_demo_client.py tests/unit/test_scripted_interactive_client.py -q
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/interactive_demo_client.py src/bionic_head/client/scripted.py tests/unit/test_interactive_demo_client.py tests/unit/test_scripted_interactive_client.py
@@ -270,7 +270,7 @@ git commit -m "feat: sync interactive demo audio and face playback"
 **Files:**
 - Create: `docs/operations/client-audio-face-sync.md`
 
-- [ ] **Step 1: Document usage**
+- [x] **Step 1: Document usage**
 
 Include:
 
@@ -300,15 +300,15 @@ Include:
   --playback-sync wait_for_face
 ```
 
-- [ ] **Step 2: Run full tests**
+- [x] **Step 2: Run full tests**
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest -q
 ```
 
-Expected: full suite passes.
+Result: `407 passed, 9 skipped, 1 warning`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/operations/client-audio-face-sync.md
@@ -319,10 +319,10 @@ git commit -m "docs: document client audio face sync"
 
 ## Completion checklist
 
-- [ ] Full pytest passes.
-- [ ] local demo supports both strategies.
-- [ ] interactive demo supports both strategies.
-- [ ] wait_for_face has timeout fallback.
-- [ ] summary/report includes `client_audio_face_offset_ms`.
-- [ ] playback.stop clears pending sync, audio, and face.
-- [ ] old generation audio/face do not play.
+- [x] Full pytest passes.
+- [x] local demo supports both strategies.
+- [x] interactive demo supports both strategies.
+- [x] wait_for_face has timeout fallback.
+- [x] summary/report includes `client_audio_face_offset_ms`.
+- [x] playback.stop clears pending sync, audio, and face.
+- [x] old generation audio/face do not play.
