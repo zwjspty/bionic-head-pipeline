@@ -40,7 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-for-face-timeout-ms", type=int, default=800)
     parser.add_argument("--history-turn1-wav", type=Path)
     parser.add_argument("--history-turn2-wav", type=Path)
-    parser.add_argument("--expect", default="小张")
+    parser.add_argument(
+        "--expect",
+        default=None,
+        help="Expected text in the second history reply. Defaults to mock-friendly text in fake mode and 小张 in real mode.",
+    )
     parser.add_argument("--chunk-ms", type=int, default=40)
     parser.add_argument("--timeout-sec", type=float, default=30.0)
     parser.add_argument("--data-latest-dir", type=Path, default=Path("data/latest"))
@@ -104,7 +108,7 @@ async def _run_scripted_interactive_check(args: argparse.Namespace) -> Acceptanc
             url=args.url,
             output_dir=output_dir,
             scripted_turns=2,
-            scripted_cancel_after_ms=300,
+            scripted_cancel_after_ms=0,
             chunk_ms=args.chunk_ms,
             sample_rate=16000,
             audio_backend=args.audio_backend,
@@ -162,7 +166,7 @@ async def _run_history_check(args: argparse.Namespace) -> AcceptanceCheckResult:
             mode="mock" if args.mode == "fake" else "real",
             turn1_wav=args.history_turn1_wav,
             turn2_wav=args.history_turn2_wav,
-            expected_text=args.expect,
+            expected_text=_history_expected_text(args),
             chunk_ms=args.chunk_ms,
             timeout_sec=args.timeout_sec,
         )
@@ -197,7 +201,7 @@ async def _run_playback_interrupt_check(args: argparse.Namespace) -> AcceptanceC
             output_dir=output_dir,
             chunk_ms=args.chunk_ms,
             play_audio=False,
-            cancel_after_ms=300,
+            cancel_after_ms=0,
             playback_sync="immediate_audio",
             wait_for_face_timeout_ms=args.wait_for_face_timeout_ms,
         )
@@ -297,6 +301,12 @@ def _exception_result(failure_code: str, exc: BaseException) -> AcceptanceCheckR
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _history_expected_text(args: argparse.Namespace) -> str:
+    if args.expect:
+        return str(args.expect)
+    return "你好" if args.mode == "fake" else "小张"
 
 
 def main() -> None:

@@ -532,6 +532,68 @@ async def test_run_demo_acceptance_aggregates_fake_checks(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_acceptance_interrupt_checks_cancel_immediately_for_fast_mock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scripts.run_demo_acceptance as runner
+
+    scripted_calls: list[dict[str, object]] = []
+    local_calls: list[dict[str, object]] = []
+
+    async def fake_scripted(**kwargs):
+        scripted_calls.append(kwargs)
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            output_dir / "interaction_report.json",
+            {
+                "success": True,
+                "turn_count": 2,
+                "completed_turn_count": 1,
+                "cancelled_turn_count": 1,
+                "old_generation_audio_play_count": 0,
+                "old_generation_face_display_count": 0,
+            },
+        )
+        write_json(output_dir / "summary.json", {"terminal_event": "server.pipeline.done"})
+        return "server.pipeline.done"
+
+    async def fake_local(**kwargs):
+        local_calls.append(kwargs)
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(
+            output_dir / "summary.json",
+            {
+                "terminal_event": "server.turn.cancelled",
+                "playback_stop_count": 1,
+                "client_interrupt_sent_ms": 1.0,
+            },
+        )
+        return "server.turn.cancelled"
+
+    monkeypatch.setattr(runner.interactive_demo_client, "run_scripted_demo", fake_scripted)
+    monkeypatch.setattr(runner.local_demo_client, "run_local_demo", fake_local)
+
+    args = argparse.Namespace(
+        url="ws://127.0.0.1:8005/pipeline/stream",
+        output_dir=tmp_path,
+        chunk_ms=40,
+        audio_backend="null",
+        wait_for_face_timeout_ms=800,
+        timeout_sec=30.0,
+    )
+
+    scripted_result = await runner._run_scripted_interactive_check(args)
+    interrupt_result = await runner._run_playback_interrupt_check(args)
+
+    assert scripted_result.success is True
+    assert interrupt_result.success is True
+    assert scripted_calls[0]["scripted_cancel_after_ms"] == 0
+    assert local_calls[0]["cancel_after_ms"] == 0
+
+
+@pytest.mark.asyncio
 async def test_run_demo_acceptance_writes_report_when_history_smoke_exits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -641,10 +703,12 @@ async def test_run_scripted_interactive_check_fails_when_acceptance_counts_do_no
 
 
 @pytest.mark.parametrize(
-    ("mode", "history_turn1_wav", "history_turn2_wav", "expected_internal_mode"),
+    ("mode", "history_turn1_wav", "history_turn2_wav", "expect", "expected_internal_mode", "expected_text"),
     [
-        ("fake", None, None, "mock"),
-        ("real", Path("/tmp/turn1.wav"), Path("/tmp/turn2.wav"), "real"),
+        ("fake", None, None, None, "mock", "你好"),
+        ("fake", None, None, "自定义", "mock", "自定义"),
+        ("real", Path("/tmp/turn1.wav"), Path("/tmp/turn2.wav"), None, "real", "小张"),
+        ("real", Path("/tmp/turn1.wav"), Path("/tmp/turn2.wav"), "小李", "real", "小李"),
     ],
 )
 @pytest.mark.asyncio
@@ -654,7 +718,9 @@ async def test_run_demo_acceptance_maps_history_mode(
     mode: str,
     history_turn1_wav: Path | None,
     history_turn2_wav: Path | None,
+    expect: str | None,
     expected_internal_mode: str,
+    expected_text: str,
 ) -> None:
     import scripts.run_demo_acceptance as runner
     from bionic_head.client.history_smoke import HistorySmokeReport
@@ -700,7 +766,7 @@ async def test_run_demo_acceptance_maps_history_mode(
         wait_for_face_timeout_ms=800,
         history_turn1_wav=history_turn1_wav,
         history_turn2_wav=history_turn2_wav,
-        expect="小张",
+        expect=expect,
         chunk_ms=40,
         timeout_sec=30.0,
         data_latest_dir=None,
@@ -711,3 +777,4 @@ async def test_run_demo_acceptance_maps_history_mode(
     assert report["success"] is True
     assert history_calls
     assert history_calls[0]["mode"] == expected_internal_mode
+    assert history_calls[0]["expected_text"] == expected_text
