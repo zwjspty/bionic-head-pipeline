@@ -103,7 +103,7 @@ async def run_history_smoke(
                 {"byte_length": len(chunk), "duration_ms": int(len(chunk) / 2 / 16000 * 1000)},
             )
             await websocket.send(chunk)
-        await send_json(websocket, "client.audio.end", turn_id, {"reason": "history_smoke"})
+        await send_json(websocket, "client.audio.end", turn_id, {"reason": "client_end"})
 
     async def wait_for_turn_done(websocket, *, turn_index: int, turn_id: UUID) -> HistorySmokeTurn:
         asr_text: str | None = None

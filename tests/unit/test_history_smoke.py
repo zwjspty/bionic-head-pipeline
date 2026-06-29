@@ -357,6 +357,11 @@ async def test_history_smoke_runner_drives_two_turns_and_writes_success_report(m
     assert sent_types[0] == "client.session.start"
     assert sent_types.count("client.audio.start") == 2
     assert sent_types.count("client.audio.end") == 2
+    assert [
+        event["payload"]["reason"]
+        for event in websocket.sent_json()
+        if event["type"] == "client.audio.end"
+    ] == ["client_end", "client_end"]
     assert report.success is True
     assert report.turns[0].asr_text == "我叫小张。"
     assert report.turns[1].asr_text == "我叫什么？"
