@@ -5,7 +5,9 @@ import math
 import pytest
 
 from bionic_head.ue5_playback_contract import (
+    UE5PlaybackReceiverState,
     UE5PlaybackContractError,
+    replay_ue5_events,
     validate_playback_stop,
     validate_ue5_frame_chunk,
 )
@@ -35,6 +37,34 @@ def valid_chunk(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def chunk_with_frames(
+    *,
+    chunk_id: str = "chunk-0001-0000",
+    segment_id: str = "chunk-0001",
+    generation_epoch: int = 0,
+    start_frame_index: int = 0,
+    frame_count: int = 2,
+    is_last: bool = False,
+):
+    frames = [
+        {
+            "frame_index": start_frame_index + offset,
+            "time_seconds": (start_frame_index + offset) / 30.0,
+            "weights": [float(offset) / 10.0] * 52,
+        }
+        for offset in range(frame_count)
+    ]
+    return valid_chunk(
+        chunk_id=chunk_id,
+        segment_id=segment_id,
+        generation_epoch=generation_epoch,
+        start_frame_index=start_frame_index,
+        frame_count=frame_count,
+        is_last=is_last,
+        frames=frames,
+    )
 
 
 def test_validates_valid_ue5_frame_chunk() -> None:
@@ -110,3 +140,104 @@ def test_validates_playback_stop_payload() -> None:
 def test_rejects_invalid_playback_stop_generation_epoch() -> None:
     with pytest.raises(UE5PlaybackContractError, match="generation_epoch"):
         validate_playback_stop({"generation_epoch": -1})
+
+
+def test_receiver_state_accepts_ordered_frame_chunks() -> None:
+    state = UE5PlaybackReceiverState()
+
+    first = state.accept_ue5_frame_chunk(
+        chunk_with_frames(chunk_id="chunk-0001-0000", start_frame_index=0, frame_count=2)
+    )
+    second = state.accept_ue5_frame_chunk(
+        chunk_with_frames(
+            chunk_id="chunk-0001-0001",
+            start_frame_index=2,
+            frame_count=2,
+            is_last=True,
+        )
+    )
+
+    assert first.accepted is True
+    assert second.accepted is True
+    assert state.metrics["received_frame_chunks"] == 2
+    assert state.metrics["buffered_frame_count"] == 4
+    assert state.metrics["missing_or_gap_count"] == 0
+
+
+def test_receiver_state_clears_on_playback_stop_and_drops_stale_generation() -> None:
+    state = UE5PlaybackReceiverState()
+    state.accept_ue5_frame_chunk(chunk_with_frames(generation_epoch=0))
+
+    stop_action = state.accept_playback_stop(
+        {"generation_epoch": 1, "reason": "client_cancel"}
+    )
+    stale_action = state.accept_ue5_frame_chunk(
+        chunk_with_frames(chunk_id="stale", generation_epoch=0)
+    )
+
+    assert stop_action.action == "clear"
+    assert state.active_generation_epoch == 1
+    assert state.metrics["playback_stop_count"] == 1
+    assert state.metrics["buffer_clear_count"] == 1
+    assert state.metrics["buffered_frame_count"] == 0
+    assert stale_action.accepted is False
+    assert stale_action.reason == "stale_generation"
+    assert state.metrics["stale_drop_count"] == 1
+
+
+def test_receiver_state_drops_duplicate_chunk_ids() -> None:
+    state = UE5PlaybackReceiverState()
+
+    first = state.accept_ue5_frame_chunk(chunk_with_frames(chunk_id="duplicate"))
+    duplicate = state.accept_ue5_frame_chunk(chunk_with_frames(chunk_id="duplicate"))
+
+    assert first.accepted is True
+    assert duplicate.accepted is False
+    assert duplicate.reason == "duplicate_chunk"
+    assert state.metrics["received_frame_chunks"] == 1
+    assert state.metrics["duplicate_drop_count"] == 1
+    assert state.metrics["buffered_frame_count"] == 2
+
+
+def test_receiver_state_counts_frame_gaps_without_rejecting_valid_chunk() -> None:
+    state = UE5PlaybackReceiverState()
+    state.accept_ue5_frame_chunk(
+        chunk_with_frames(chunk_id="chunk-0001-0000", start_frame_index=0, frame_count=2)
+    )
+
+    action = state.accept_ue5_frame_chunk(
+        chunk_with_frames(
+            chunk_id="chunk-0001-0001",
+            start_frame_index=5,
+            frame_count=1,
+        )
+    )
+
+    assert action.accepted is True
+    assert action.reason == "gap_detected"
+    assert state.metrics["missing_or_gap_count"] == 1
+    assert state.metrics["buffered_frame_count"] == 3
+
+
+def test_replay_ue5_events_returns_receiver_metrics() -> None:
+    report = replay_ue5_events(
+        [
+            {
+                "type": "server.ue5.frames",
+                "payload": chunk_with_frames(generation_epoch=0),
+            },
+            {
+                "type": "server.playback.stop",
+                "payload": {"generation_epoch": 1, "reason": "client_cancel"},
+            },
+            {
+                "type": "server.ue5.frames",
+                "payload": chunk_with_frames(chunk_id="stale", generation_epoch=0),
+            },
+        ]
+    )
+
+    assert report["active_generation_epoch"] == 1
+    assert report["received_frame_chunks"] == 1
+    assert report["playback_stop_count"] == 1
+    assert report["stale_drop_count"] == 1
