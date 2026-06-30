@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +15,9 @@ from bionic_head.ue5_playback_contract import (
     validate_playback_stop,
     validate_ue5_frame_chunk,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "ue5_playback_contract"
 
 
 def valid_chunk(**overrides):
@@ -241,3 +248,87 @@ def test_replay_ue5_events_returns_receiver_metrics() -> None:
     assert report["received_frame_chunks"] == 1
     assert report["playback_stop_count"] == 1
     assert report["stale_drop_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "scripts/validate_ue5_playback_contract.py",
+        "scripts/replay_ue5_frames.py",
+    ],
+)
+def test_ue5_playback_scripts_expose_help(script: str) -> None:
+    result = subprocess.run(
+        [sys.executable, script, "--help"],
+        cwd=PROJECT_ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "usage:" in result.stdout
+
+
+def test_validate_ue5_playback_contract_cli_accepts_valid_fixture() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_ue5_playback_contract.py",
+            str(FIXTURES_DIR / "valid_segment.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["success"] is True
+    assert report["validated_count"] == 1
+
+
+def test_validate_ue5_playback_contract_cli_rejects_invalid_fixture() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_ue5_playback_contract.py",
+            str(FIXTURES_DIR / "invalid_channel_count.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["success"] is False
+    assert report["failure_count"] == 1
+    assert "channel_count" in report["failures"][0]["error"]
+
+
+def test_replay_ue5_frames_cli_reports_drop_and_clear_metrics() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/replay_ue5_frames.py",
+            str(FIXTURES_DIR / "playback_stop_and_stale.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["success"] is True
+    assert report["metrics"]["playback_stop_count"] == 1
+    assert report["metrics"]["stale_drop_count"] == 1
+    assert report["metrics"]["buffer_clear_count"] == 1

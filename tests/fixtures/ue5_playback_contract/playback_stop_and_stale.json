@@ -1,0 +1,71 @@
+[
+  {
+    "type": "server.ue5.frames",
+    "payload": {
+      "protocol": "bionic-head-ue5-v1",
+      "format": "morpheus_52_raw",
+      "session_id": "session-1",
+      "turn_id": "turn-1",
+      "generation_epoch": 0,
+      "chunk_id": "chunk-0001-0000",
+      "segment_id": "chunk-0001",
+      "segment_index": 0,
+      "fps": 30,
+      "channel_count": 52,
+      "start_frame_index": 0,
+      "frame_count": 1,
+      "pts_start_ms": 0.0,
+      "is_last": true,
+      "frames": [
+        {
+          "frame_index": 0,
+          "time_seconds": 0.0,
+          "weights": [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "type": "server.playback.stop",
+    "payload": {
+      "generation_epoch": 1,
+      "reason": "client_cancel"
+    }
+  },
+  {
+    "type": "server.ue5.frames",
+    "payload": {
+      "protocol": "bionic-head-ue5-v1",
+      "format": "morpheus_52_raw",
+      "session_id": "session-1",
+      "turn_id": "turn-1",
+      "generation_epoch": 0,
+      "chunk_id": "chunk-0001-0001",
+      "segment_id": "chunk-0001",
+      "segment_index": 0,
+      "fps": 30,
+      "channel_count": 52,
+      "start_frame_index": 1,
+      "frame_count": 1,
+      "pts_start_ms": 33.333,
+      "is_last": true,
+      "frames": [
+        {
+          "frame_index": 1,
+          "time_seconds": 0.0333333333,
+          "weights": [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+          ]
+        }
+      ]
+    }
+  }
+]
